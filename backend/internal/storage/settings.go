@@ -43,6 +43,7 @@ type SettingRecord struct {
 
 /*
 GetSetting 读取一条设置。
+
 	不存在时返回 ErrSettingNotFound。调用方回落环境变量。
 */
 func GetSetting(ctx context.Context, pool *pgxpool.Pool, box *secrets.Box, key string) (SettingRecord, error) {
@@ -76,6 +77,7 @@ func GetSetting(ctx context.Context, pool *pgxpool.Pool, box *secrets.Box, key s
 
 /*
 SaveSetting 写入一条设置并将 version 加一。
+
 	version 供邮件供应商缓存比较。变更后按新凭证重建 provider。无需重启。
 */
 func SaveSetting(

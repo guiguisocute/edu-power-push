@@ -24,6 +24,7 @@ var (
 
 /*
 OAuthProfile 为第三方登录返回的事实。全部由提供方给出。
+
 	Subject 为提供方稳定用户 ID。它是身份主键。邮箱可改。
 */
 type OAuthProfile struct {
@@ -45,10 +46,10 @@ type OAuthLoginOutcome struct {
 
 /*
 LinkOrCreateOAuthUser 将第三方登录落成本站会话。
-	1. 身份已存在：直接登录。更新邮箱线索与登录时间。
-	2. 新身份且已验证邮箱匹配已有账号：绑定。
-	3. 身份与邮箱均新：建账号。密码列留空。
-	邮箱未验证时禁止认领已有账号。返回 ErrOAuthEmailUnverified。
+ 1. 身份已存在：直接登录。更新邮箱线索与登录时间。
+ 2. 新身份且已验证邮箱匹配已有账号：绑定。
+ 3. 身份与邮箱均新：建账号。密码列留空。
+    邮箱未验证时禁止认领已有账号。返回 ErrOAuthEmailUnverified。
 */
 func LinkOrCreateOAuthUser(
 	ctx context.Context,

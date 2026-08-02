@@ -390,6 +390,7 @@ func (w *worker) recover(ctx context.Context) {
 
 /*
 resumable 判定中断 run 是否自动续跑。
+
 	仅拦截 trigger 为 schedule 的任务。
 	SCHEDULE 为 MANUAL 时禁止自动捡回。
 	manual / retry / recovery 仍续跑；停止请取消。
@@ -498,6 +499,7 @@ func (w *worker) recoverDailyDetails(ctx context.Context) {
 
 /*
 runPending 领取并启动待办采集任务。
+
 	未选学校时跳过本轮，任务留在 pending。
 	避免 school_not_configured 失败污染运行记录。
 */
@@ -528,6 +530,7 @@ func (w *worker) runPending(ctx context.Context) {
 
 /*
 logSchoolIdle 输出未选学校警告。每 10 分钟最多一次。
+
 	runPending 每 5 秒一轮。高频日志会掩盖真实错误。
 */
 func (w *worker) logSchoolIdle() {

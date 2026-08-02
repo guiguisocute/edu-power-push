@@ -35,6 +35,7 @@ var (
 
 /*
 IssueEmailCode 写入或覆盖一条验证码。
+
 	距上次发码不足 EmailCodeResendInterval 时返回 ErrEmailCodeTooSoon 与剩余秒数。
 	调用方据此回 429 与 Retry-After。
 */
@@ -130,6 +131,7 @@ func reserveUserMailQuota(ctx context.Context, tx pgx.Tx, minuteLimit, dayLimit 
 
 /*
 ConsumeEmailCode 校验并一次性消费验证码。
+
 	错误码仅累加 attempts。禁止泄露该邮箱是否在流程中。
 */
 func ConsumeEmailCode(ctx context.Context, pool *pgxpool.Pool, email, purpose string, codeHash []byte) error {

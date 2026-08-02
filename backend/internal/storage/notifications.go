@@ -501,6 +501,7 @@ func GetNotificationChannel(ctx context.Context, db dbConn, box *secrets.Box, us
 
 /*
 SaveNotificationChannel 写入单个渠道。
+
 	config 中省略的敏感字段保留原值。显式 null 清空。
 */
 func SaveNotificationChannel(
@@ -577,6 +578,7 @@ type ChannelPatch struct {
 
 /*
 ReplaceNotificationChannels 一次写入多个渠道。
+
 	整批在同一事务。禁止逐条提交导致半成功。
 */
 func ReplaceNotificationChannels(ctx context.Context, pool *pgxpool.Pool, box *secrets.Box, userID string, items []ChannelPatch) (ChannelList, error) {
@@ -615,6 +617,7 @@ func RecordChannelTestResult(ctx context.Context, pool *pgxpool.Pool, userID, ch
 
 /*
 TruncateText 按字符截断。禁止按字节截断。
+
 	按字节切会切开中文 rune。产生非法 UTF-8。PostgreSQL 拒收日志。
 */
 func TruncateText(value string, max int) string {
@@ -638,6 +641,7 @@ func InsertPushLog(ctx context.Context, pool *pgxpool.Pool, userID, channel, kin
 
 /*
 ListPushLogs 按时间倒序取一页推送记录。
+
 	调用方传 limit+1 判断是否有下一页。与 httpapi nextCursor 约定一致。
 	排序带 id DESC 兜底。保证同秒多条记录分页稳定。
 */
@@ -1005,6 +1009,7 @@ var webhookHosts = map[string][]string{
 
 /*
 validateWebhookURL 防 SSRF。仅允许各厂商已知域名。
+
 	必须解析 Host 再比对。禁止子串匹配。
 */
 func validateWebhookURL(channel, raw string) error {

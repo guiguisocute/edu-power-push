@@ -29,6 +29,7 @@ var (
 
 /*
 MaxMeterBinders 为一块表的最大绑定账号数。
+
 	真正约束在库中。见 migrations/000025 槽位唯一索引。
 	先 count 再 insert 在并发下会漏。
 	本常量仅用于生成候选槽位与错误文案。必须与 CHECK 同步修改。
@@ -37,6 +38,7 @@ const MaxMeterBinders = 4
 
 /*
 bindMeterSlot 占用当前空着的最小槽位。
+
 	新增绑定必须走此处。直接 INSERT 会绕过槽位分配。
 	表满时插入 0 行。使用 RowsAffected 判定。
 */
@@ -67,6 +69,7 @@ func bindMeterSlot(ctx context.Context, tx pgx.Tx, userID, meterID string) error
 
 /*
 countActiveBinders 返回该表当前生效绑定数。
+
 	exceptUserID 非空时排除该用户。避免本人占用名额。
 */
 func countActiveBinders(ctx context.Context, pool *pgxpool.Pool, meterNo, exceptUserID string) (int, error) {
@@ -348,6 +351,7 @@ func scanAuthUser(row pgx.Row) (AuthUser, error) {
 
 /*
 RevokeAllUserSessions 吊销该用户全部会话。
+
 	不改密码即可收回全部会话。返回吊销条数。
 */
 func RevokeAllUserSessions(ctx context.Context, pool *pgxpool.Pool, userID string) (int64, error) {
@@ -636,6 +640,7 @@ func UpdateEmail(ctx context.Context, pool *pgxpool.Pool, userID, newEmail strin
 
 /*
 DeleteAuthUser 注销账号。真删除，不是置 disabled。
+
 	用户数据随 ON DELETE CASCADE 删除。
 	电表读数、日用量与月账单挂在 meters 上。禁止删除。
 	审计日志 actor_id 置 NULL。保留操作痕迹。

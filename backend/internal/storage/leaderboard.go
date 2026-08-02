@@ -42,6 +42,7 @@ func maskDigits(value string) string {
 
 /*
 rankingName 渲染榜单名称列。
+
 	binderCount 为绑定人数。0 表示未注册。
 	多人合用时显示「共享房间」。禁止写单一昵称。
 	reveal 为管理员视角。不脱敏。列出全部昵称。

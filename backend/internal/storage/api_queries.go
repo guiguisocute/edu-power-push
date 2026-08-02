@@ -631,6 +631,7 @@ func GetSeries(ctx context.Context, pool *pgxpool.Pool, meter, metric, granulari
 
 /*
 GetCampusBreakdown 按楼栋或楼层 × 时间桶聚合用电量。
+
 	building 为空时按楼栋分组。否则按该栋楼层分组。
 	库存仅含宿舍表。禁止按建筑类别拆分。
 */
@@ -807,6 +808,7 @@ func GetCampusBreakdown(
 rankingCTE 为榜单口径唯一来源。
 $1=from $2=toExclusive $3=previousFrom $4=building $5=floor
 $6=不支持楼栋 $7=模式 $8=本期天数 $9=上期天数。
+
 	列表与本人名次必须使用同一 CTE。否则口径会漂移。
 */
 const rankingCTE = `
@@ -877,6 +879,7 @@ const rankingCTE = `
 /*
 GetRanking 渲染榜单。viewerUserID 为空表示匿名调用者。
 平台支持的 active 电表强制参与。偏好仅影响文案，不控制是否上榜。
+
 	reveal 为真时跳过脱敏。仅给 operator / admin。
 	角色由 API 层现查。见 httpapi.campusRankings。
 */
@@ -1038,6 +1041,7 @@ func rankingPeriods(period string, now time.Time, refreshTime string) rankingPer
 
 /*
 selfRanking 计算调用者电表名次。与列表使用同一 CTE 和排序。
+
 	名次全量计算。不受 limit 影响。
 */
 func selfRanking(

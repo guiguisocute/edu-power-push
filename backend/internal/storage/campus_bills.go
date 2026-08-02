@@ -176,6 +176,7 @@ func parseFloatOrZero(raw string) float64 {
 
 /*
 GetCampusBillBreakdown 用月账单铺楼栋或楼层 × 月矩阵。
+
 	年视图热力图必须使用已持久化官方历史。禁止用当日扫描估算。
 	返回形状与 GetCampusBreakdown 一致。
 	buckets 列出 from_month 到 to_month 全部月份。缺数据为 null。

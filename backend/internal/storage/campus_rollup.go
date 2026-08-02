@@ -19,6 +19,7 @@ const campusRollupLockID int64 = 836005285
 
 /*
 RefreshCampusRollup 重建 daily_campus_rollup。
+
 	CONCURRENTLY：重建期间读者不阻塞。必须有唯一索引。
 	必须等待前一次刷新结束再跑。否则新提交会缺席。
 */

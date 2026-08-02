@@ -11,6 +11,7 @@ import (
 
 /*
 日 / 夜用电拆分。
+
 	上游每日仅两次抄表（cbsj）。无小时级曲线。
 	数据源为 consumption_deltas 区间用量。
 	整段落在 06:00–18:00 记白天。18:00–次日 06:00 记夜间。
@@ -97,6 +98,7 @@ func (a *dayNightAcc) view() DayNightSlice {
 
 /*
 dayOverlapHours 返回区间与各 [06:00, 18:00) 白天窗口的交集时长。
+
 	夜间时长 = 总时长 − 白天时长。无需单独计算。
 */
 func dayOverlapHours(f, t time.Time, loc *time.Location) float64 {
@@ -122,6 +124,7 @@ func dayOverlapHours(f, t time.Time, loc *time.Location) float64 {
 
 /*
 classifyDayNight 判断抄表区间归属白天或夜间，并返回纯度。
+
 	按主要落在哪一侧打标签。禁止按时长比例分摊用电。
 	纯度随结果返回。低于门槛则丢弃。
 */
@@ -150,6 +153,7 @@ func classifyDayNight(from, to time.Time, loc *time.Location) (string, float64) 
 
 /*
 GetDayNightSplit 统计一块表在窗口内的日 / 夜用电。
+
 	仅取 status 为 valid / unchanged 的区间。
 	unchanged 为真实 0 度，不是缺数据。异常段不参与。
 */

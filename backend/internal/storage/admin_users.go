@@ -70,6 +70,7 @@ type AdminUserPage struct {
 
 /*
 ListAdminUsers 返回用户管理列表。
+
 	q 同时匹配邮箱、昵称和电表号。
 */
 func ListAdminUsers(ctx context.Context, pool *pgxpool.Pool, q, role, status string, limit, offset int) (AdminUserPage, error) {
@@ -125,6 +126,7 @@ func ListAdminUsers(ctx context.Context, pool *pgxpool.Pool, q, role, status str
 
 /*
 UpdateAdminUser 更新角色或启停状态。
+
 	禁止降级或禁用最后一个 admin。否则无人可进面板。
 	禁用时吊销全部会话。否则现有 token 仍可用。
 */
@@ -228,6 +230,7 @@ type AuditEntry struct {
 
 /*
 WriteAudit 写入一条面板操作记录。
+
 	detail 仅含字段变更元信息。禁止写入凭证值。
 	调用方忽略错误并记日志。禁止因审计失败中断业务。
 */
@@ -275,6 +278,7 @@ func ListAudit(ctx context.Context, pool *pgxpool.Pool, limit int) ([]AuditEntry
 
 /*
 CountActiveAdmins 用于引导检查。
+
 	无 admin 时面板提示用 ADMIN_TOKEN 自举。
 */
 func CountActiveAdmins(ctx context.Context, pool *pgxpool.Pool) (int, error) {

@@ -25,6 +25,7 @@ const Name = "bdfairy"
 const defaultBaseURL = "http://bd.bdfairy.cn"
 
 // schools.json 随二进制嵌入，随实现更换。
+//
 //go:embed schools.json
 var schoolsJSON []byte
 

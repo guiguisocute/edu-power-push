@@ -141,6 +141,7 @@ type MeterLocation struct {
 
 /*
 CampusBreakdownView 为楼栋或楼层 × 时间的用电矩阵。
+
 	行合计供构成图。行 × 桶供热力图。
 	无楼栋时按楼栋分组。有楼栋时按楼层分组。
 	库存仅含宿舍电表。禁止按建筑类别拆分。
@@ -209,6 +210,7 @@ type CampusSummaryView struct {
 
 /*
 榜单行。脱敏必须在服务端完成。禁止仅依赖前端打码。
+
 	Name 为名称列。Label 为位置列。
 	Building / Floor / Room 仅对本人下发明文。
 */
@@ -226,6 +228,7 @@ type RankingEntryView struct {
 
 /*
 榜单身份偏好。无账号电表使用 defaultLeaderboardPreference()。
+
 	默认参与榜单。完整楼栋与楼层。房间打码。
 	禁止匿名可读明文房间号。
 */
@@ -265,6 +268,7 @@ type RankingPeriodView struct {
 
 /*
 RankingSelfView 为调用者本人的名次。
+
 	名次不受 limit 限制。明文位置仅回给本人。
 */
 type RankingSelfView struct {

@@ -27,6 +27,7 @@ type FrontendAuthFeatures struct {
 
 /*
 FrontendOAuth 为服务端第三方登录能力。只读。
+
 	来自运行配置。面板禁止修改。
 	无凭证时禁止打开入口。
 */
@@ -37,6 +38,7 @@ type FrontendOAuth struct {
 
 /*
 FrontendChartFeatures 控制依赖上游能力的图表入口。
+
 	无可靠小时级抄表时 DayRange / HourlyUsage 默认 false。
 */
 type FrontendChartFeatures struct {
@@ -46,6 +48,7 @@ type FrontendChartFeatures struct {
 
 /*
 FrontendChannelCategory 为推送渠道列表中的一个分组。
+
 	分组仅用于展示。组内顺序由 ChannelOrder 决定。
 	ID 为稳定键。Name / EN 为中英标题。Desc 为说明。
 */
@@ -74,6 +77,7 @@ var defaultFrontendChannelOrder = []string{
 
 /*
 FrontendSemester 为一个学期的起止。
+
 	学期视图完全由本配置决定。禁止写死在代码中。
 	Key 为开学年月（YYYY-MM）。必须与 Start 同月。
 */
@@ -298,6 +302,7 @@ func thresholdChanged(previous, next *string) bool {
 
 /*
 OAuthProviderEnabled 读取面板入口开关。
+
 	缺字段按开启处理。兼容未跑 000044 的旧库。
 	是否真正可用仍取决于 client id / secret。
 */
