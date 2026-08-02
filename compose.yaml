@@ -1,0 +1,251 @@
+# 整套系统编排：db + api + worker + web（前端）+ admin（一次性工具）+ mailpit。
+# 文件位于仓库根目录。它编排整个项目，不只是后端。
+# web 服务构建上下文为 ./frontend。
+# 若放在 backend/ 下，则需用 ../frontend 指到外部。
+#
+# 发布包保持相同布局（compose.yaml 在顶层、backend/ 为子目录）。
+# 服务器上的 release 目录与本仓库形状一致，排查时无需换算路径。
+#
+# 环境隔离：同一套代码 + 环境变量 + 各自独立的基础设施。
+# 每个环境一份 .env，必须各自声明 APP_ENV / COMPOSE_PROJECT_NAME / APP_IMAGE / API_PORT
+# 以及独立的 POSTGRES_PASSWORD、ADMIN_TOKEN、AUTH_JWT_SECRET。
+# compose 用 COMPOSE_PROJECT_NAME 给容器和卷加前缀，因此 <project>_postgres-data
+# 为两套互不相通的数据库。测试环境的迁移、导入、扫描碰不到生产库。
+x-app-environment: &app-environment
+  APP_ENV: ${APP_ENV:?APP_ENV is required (development|test|production)}
+  APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
+  # 学校不设默认值。留空时服务照常启动、面板照常可登，但采集器拒绝运行。
+  # 去运维面板「采集器 · 学校」选一所，或在 .env 中填这两个值。
+  AREA_ID: ${AREA_ID:-}
+  AREA_NAME: ${AREA_NAME:-}
+  ELECTRICITY_BASE_URL: ${ELECTRICITY_BASE_URL:-http://bd.bdfairy.cn}
+  # 三类批量扫描可并行，但所有进程合计仍受本组共享上游闸门约束。
+  # GLOBAL 为默认值（面板保存后由 system_settings 接管）。MAX 为面板不可越过的上限。
+  UPSTREAM_GLOBAL_QPS: ${UPSTREAM_GLOBAL_QPS:-8}
+  UPSTREAM_GLOBAL_CONCURRENCY: ${UPSTREAM_GLOBAL_CONCURRENCY:-8}
+  UPSTREAM_MAX_QPS: ${UPSTREAM_MAX_QPS:-30}
+  UPSTREAM_MAX_CONCURRENCY: ${UPSTREAM_MAX_CONCURRENCY:-16}
+  # 闸门每个并发槽占用一条池连接。池大小必须大于闸门上限，并留出办事余量。
+  DATABASE_MAX_CONNS: ${DATABASE_MAX_CONNS:-24}
+  DATABASE_URL: postgres://${POSTGRES_USER:-edu_power}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-edu_power}?sslmode=disable
+  ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN is required}
+  # 管理面板存凭证用的加密密钥（openssl rand -base64 32）。
+  # 留空则面板只能改非敏感设置，不会静默存明文。
+  SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-}
+  # Only a gateway that knows this secret may assign per-connection rate buckets.
+  # Blank means all X-Rate-Proxy-Key values are ignored.
+  AUTH_RATE_PROXY_SECRET: ${AUTH_RATE_PROXY_SECRET:-}
+  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?AUTH_JWT_SECRET is required}
+  AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-edu-power-push}
+  AUTH_ACCESS_TTL_SEC: ${AUTH_ACCESS_TTL_SEC:-900}
+  AUTH_REFRESH_TTL_DAYS: ${AUTH_REFRESH_TTL_DAYS:-30}
+  AUTH_REFRESH_COOKIE_NAME: ${AUTH_REFRESH_COOKIE_NAME:-edu_power_refresh}
+  # 留空 = 交给后端按 APP_ENV 取默认值（production→true，其余→false）。
+  # 此处禁止写死 true，否则测试环境 HTTP 入口拿不到 refresh cookie。
+  AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-}
+  # 第三方登录。留空 = 登录页不出现对应按钮。ID 与 Secret 只配一个会启动失败。
+  # 回调地址 = OAUTH_BASE_URL + /api/v1/auth/oauth/{google|github}/callback。
+  # 必须与提供方后台登记的重定向 URI 完全一致。留空则退回 PUBLIC_BASE_URL。
+  OAUTH_BASE_URL: ${OAUTH_BASE_URL:-}
+  GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+  GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+  GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+  GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+  CAPTCHA_PROVIDER: ${CAPTCHA_PROVIDER:-disabled}
+  CAPTCHA_ACTIONS: ${CAPTCHA_ACTIONS:-auth.login,auth.register_code,auth.password_reset_code,meter.preview}
+  TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+  TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+  TURNSTILE_HOSTNAME: ${TURNSTILE_HOSTNAME:-}
+  TURNSTILE_VERIFY_URL: ${TURNSTILE_VERIFY_URL:-https://challenges.cloudflare.com/turnstile/v0/siteverify}
+  SCAN_CRON: ${SCAN_CRON:-}
+  # 已注册且仍绑定的有效电表优先刷新。放在每小时 :05，避开 :15 的全量任务。
+  BOUND_SCAN_CRON: ${BOUND_SCAN_CRON:-5 * * * *}
+  SCAN_CONCURRENCY: ${SCAN_CONCURRENCY:-1}
+  SCAN_QPS: ${SCAN_QPS:-0.5}
+  SCAN_MAX_CONCURRENCY: ${SCAN_MAX_CONCURRENCY:-16}
+  SCAN_MAX_QPS: ${SCAN_MAX_QPS:-10}
+  SCAN_TIMEOUT_SEC: ${SCAN_TIMEOUT_SEC:-20}
+  SCAN_RETRY_MAX: ${SCAN_RETRY_MAX:-3}
+  SCAN_RETRY_BASE_DELAY_MS: ${SCAN_RETRY_BASE_DELAY_MS:-1000}
+  SCAN_RETRY_MAX_DELAY_MS: ${SCAN_RETRY_MAX_DELAY_MS:-30000}
+  SCAN_STALE_AFTER_HOURS: ${SCAN_STALE_AFTER_HOURS:-36}
+  SCAN_RESULT_RETENTION_DAYS: ${SCAN_RESULT_RETENTION_DAYS:-180}
+  LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
+  # 上月账单通常到次月 1 日傍晚才发布。19:00 再扫，避免凌晨把「尚未发布」误判为空账单。
+  BILL_CRON: ${BILL_CRON:-0 19 1 * *}
+  BILL_CONCURRENCY: ${BILL_CONCURRENCY:-4}
+  BILL_QPS: ${BILL_QPS:-5}
+  BILL_RETRY_MAX: ${BILL_RETRY_MAX:-1}
+  BILL_MONTH_RETRY_MAX: ${BILL_MONTH_RETRY_MAX:-1}
+  BILL_MAX_CONCURRENCY: ${BILL_MAX_CONCURRENCY:-8}
+  BILL_MAX_QPS: ${BILL_MAX_QPS:-30}
+  # 官方日用电明细：06:30 首扫；10:15 仅补扫昨日仍为空白占位的表。
+  DETAIL_CRON: ${DETAIL_CRON:-30 6 * * *}
+  DETAIL_RETRY_CRON: ${DETAIL_RETRY_CRON:-15 10 * * *}
+  DETAIL_BOOTSTRAP_FROM: ${DETAIL_BOOTSTRAP_FROM:-2025-01}
+  DETAIL_AUTO_BOOTSTRAP: ${DETAIL_AUTO_BOOTSTRAP:-false}
+  DETAIL_CONCURRENCY: ${DETAIL_CONCURRENCY:-8}
+  DETAIL_QPS: ${DETAIL_QPS:-8}
+  DETAIL_RETRY_MAX: ${DETAIL_RETRY_MAX:-1}
+  DETAIL_MONTH_RETRY_MAX: ${DETAIL_MONTH_RETRY_MAX:-1}
+  DETAIL_MAX_CONCURRENCY: ${DETAIL_MAX_CONCURRENCY:-8}
+  DETAIL_MAX_QPS: ${DETAIL_MAX_QPS:-30}
+  MAIL_PROVIDER: ${MAIL_PROVIDER:-}
+  MAIL_FROM: ${MAIL_FROM:-}
+  MAIL_ADMIN_TO: ${MAIL_ADMIN_TO:-}
+  MAIL_USER_LIMIT_PER_MINUTE: ${MAIL_USER_LIMIT_PER_MINUTE:-20}
+  MAIL_USER_LIMIT_PER_DAY: ${MAIL_USER_LIMIT_PER_DAY:-500}
+  # 邮件中指向站点的链接（页脚、通知设置）。域名只来自此处。代码中无任何域名。
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+  RESEND_API_KEY: ${RESEND_API_KEY:-}
+  RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASS: ${SMTP_PASS:-}
+  SMTP_TLS_MODE: ${SMTP_TLS_MODE:-starttls}
+  TENCENTCLOUD_SECRET_ID: ${TENCENTCLOUD_SECRET_ID:-}
+  TENCENTCLOUD_SECRET_KEY: ${TENCENTCLOUD_SECRET_KEY:-}
+  TENCENTCLOUD_REGION: ${TENCENTCLOUD_REGION:-ap-guangzhou}
+  TENCENT_SES_FROM_EMAIL: ${TENCENT_SES_FROM_EMAIL:-}
+  TENCENT_SES_TEMPLATE_ID: ${TENCENT_SES_TEMPLATE_ID:-}
+
+x-app-security: &app-security
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  stop_grace_period: 20s
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    # 校园聚合在 daily_usages（约 400 万行 / 706MB 堆 + 194MB 索引）上反复做区间聚合。
+    # 镜像默认 shared_buffers=128MB 装不下热数据。
+    # 年视图热力图因此在 2.9s 与 7.7s 之间波动，取决于缓存是否被挤掉。
+    #   shared_buffers        装下整个热工作集
+    #   effective_cache_size  告知规划器系统还有多少页缓存可用（不实际占用）
+    #   random_page_cost      SSD 上 4.0 会系统性压制索引扫描
+    #   work_mem              避免中等规模排序落盘；按连接×排序节点计，禁止再调大
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-2GB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-8GB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-32MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-512MB}
+      - -c
+      - random_page_cost=1.1
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-edu_power}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-edu_power}
+      TZ: ${APP_TIMEZONE:-Asia/Shanghai}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  api:
+    <<: *app-security
+    build:
+      context: ./backend
+    image: ${APP_IMAGE:?APP_IMAGE is required, e.g. edu-power-push:test}
+    entrypoint: ["/app/api"]
+    environment:
+      <<: *app-environment
+      HTTP_ADDR: 0.0.0.0:8080
+      OPENAPI_FILE: /app/openapi.yaml
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  worker:
+    <<: *app-security
+    image: ${APP_IMAGE:?APP_IMAGE is required, e.g. edu-power-push:test}
+    entrypoint: ["/app/worker"]
+    environment:
+      <<: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # 用户端与运维面板共用这一条同源入口。仅绑定宿主机回环地址，必须经 SSH 隧道访问。
+  # /api 与 /health 在容器内反代到 api，因此 refresh HttpOnly cookie 不跨域。
+  web:
+    <<: *app-security
+    build:
+      context: ./frontend
+    image: ${WEB_IMAGE:-edu-power-push-web:version_1}
+    user: "65532:65532"
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8081}:8080"
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /config:size=4m,mode=0700,uid=65532,gid=65532
+      - /data:size=4m,mode=0700,uid=65532,gid=65532
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  admin:
+    profiles: [tools]
+    image: ${APP_IMAGE:?APP_IMAGE is required, e.g. edu-power-push:test}
+    entrypoint: ["/app/admin"]
+    environment:
+      <<: *app-environment
+    volumes:
+      # 服务器上 bootstrap/ 在发布目录顶层（由 deploy_remote.sh 从上一版继承）。
+      # 本机则为 backend/bootstrap/。两边均用 BOOTSTRAP_DIR 覆盖，默认取本机那份。
+      - ${BOOTSTRAP_DIR:-./backend/bootstrap}:/bootstrap:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  mailpit:
+    profiles: [mailpit]
+    image: axllent/mailpit:v1.30.0
+    restart: "no"
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+volumes:
+  postgres-data:

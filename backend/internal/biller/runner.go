@@ -1,0 +1,194 @@
+package biller
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"golang.org/x/time/rate"
+
+	"github.com/edu-power-push/edu-power-push/backend/internal/provider"
+	"github.com/edu-power-push/edu-power-push/backend/internal/storage"
+)
+
+type Querier interface {
+	QueryMonthlyBills(context.Context, string, []string, provider.MonthlyQueryOptions) provider.MonthlyBillsResult
+}
+
+type Repository interface {
+	MarkRunning(context.Context, string) error
+	Months(context.Context, string) ([]string, error)
+	PendingMeters(context.Context, string) ([]storage.ScanMeter, error)
+	Record(context.Context, string, storage.ScanMeter, provider.MonthlyBillsResult, time.Duration) error
+	// Touch 写心跳。返回 true 表示已请求取消。
+	Touch(context.Context, string) (bool, error)
+	Finish(context.Context, string, bool, string) (storage.BillRunCounters, error)
+}
+
+type Config struct {
+	Concurrency    int
+	QPS            float64
+	AcquireRequest func(context.Context) (func(), error)
+	RetryMax       int
+	MonthRetryMax  int
+	ProgressEvery  int
+}
+
+type Runner struct {
+	querier Querier
+	store   Repository
+	config  Config
+	logger  *slog.Logger
+}
+
+func New(querier Querier, store Repository, config Config, logger *slog.Logger) (*Runner, error) {
+	if querier == nil || store == nil {
+		return nil, errors.New("bill querier and repository are required")
+	}
+	if config.Concurrency < 1 || config.QPS <= 0 {
+		return nil, errors.New("bill concurrency and QPS must be positive")
+	}
+	if config.RetryMax < 0 || config.MonthRetryMax < 0 {
+		return nil, errors.New("bill retry maxima cannot be negative")
+	}
+	if config.ProgressEvery < 1 {
+		config.ProgressEvery = 25
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Runner{querier: querier, store: store, config: config, logger: logger}, nil
+}
+
+func VisibleMonths(now time.Time, loc *time.Location) []string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	current := now.In(loc)
+	months := make([]string, 0, current.Month()+12)
+	for month := int(current.Month()); month >= 1; month-- {
+		months = append(months, fmt.Sprintf("%04d-%02d", current.Year(), month))
+	}
+	for month := 12; month >= 1; month-- {
+		months = append(months, fmt.Sprintf("%04d-%02d", current.Year()-1, month))
+	}
+	return months
+}
+
+func (r *Runner) Run(ctx context.Context, runID string) (storage.BillRunCounters, error) {
+	if err := r.store.MarkRunning(ctx, runID); err != nil {
+		return storage.BillRunCounters{}, err
+	}
+	months, err := r.store.Months(ctx, runID)
+	if err != nil {
+		return r.finishAfterError(runID, err)
+	}
+	meters, err := r.store.PendingMeters(ctx, runID)
+	if err != nil {
+		return r.finishAfterError(runID, err)
+	}
+	if len(meters) == 0 {
+		return r.store.Finish(ctx, runID, false, "")
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	limiter := rate.NewLimiter(rate.Limit(r.config.QPS), 1)
+	jobs := make(chan storage.ScanMeter)
+	errCh := make(chan error, 1)
+	var processed atomic.Int64
+	var workers sync.WaitGroup
+	for workerID := 0; workerID < r.config.Concurrency; workerID++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for meter := range jobs {
+				if runCtx.Err() != nil {
+					return
+				}
+				started := time.Now()
+				result := r.querier.QueryMonthlyBills(runCtx, meter.MeterNo, months, provider.MonthlyQueryOptions{
+					MaxAttempts: r.config.RetryMax + 1, MonthMaxAttempts: r.config.MonthRetryMax + 1,
+					BeforeRequest: limiter.Wait, AcquireRequest: r.config.AcquireRequest,
+				})
+				if err := r.store.Record(runCtx, runID, meter, result, time.Since(started)); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					cancel()
+					return
+				}
+				done := processed.Add(1)
+				if done%int64(r.config.ProgressEvery) == 0 || done == int64(len(meters)) {
+					r.logger.Info("bill run progress", "run_id", runID, "processed", done, "pending_at_start", len(meters))
+				}
+			}
+		}()
+	}
+
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				canceled, err := r.store.Touch(runCtx, runID)
+				if err != nil {
+					r.logger.Warn("bill run heartbeat failed", "run_id", runID, "error", err)
+				}
+				// 取消请求由 API 进程写库。
+				// 掐断 runCtx 后停止投喂新表。
+				// 在途表跑完再收尾，不硬砍连接。
+				if canceled {
+					r.logger.Warn("bill run run canceled by operator", "run_id", runID)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+sendLoop:
+	for _, meter := range meters {
+		select {
+		case <-runCtx.Done():
+			break sendLoop
+		case jobs <- meter:
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	cancel()
+	<-heartbeatDone
+	var runErr error
+	select {
+	case runErr = <-errCh:
+	default:
+		runErr = ctx.Err()
+	}
+	if runErr != nil {
+		return r.finishAfterError(runID, runErr)
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cleanupCancel()
+	return r.store.Finish(cleanupCtx, runID, false, "")
+}
+
+func (r *Runner) finishAfterError(runID string, runErr error) (storage.BillRunCounters, error) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	counters, finishErr := r.store.Finish(cleanupCtx, runID, true, runErr.Error())
+	if finishErr != nil {
+		return storage.BillRunCounters{}, fmt.Errorf("%v; also failed to mark bill run interrupted: %w", runErr, finishErr)
+	}
+	return counters, runErr
+}

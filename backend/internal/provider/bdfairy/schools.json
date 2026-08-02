@@ -1,0 +1,392 @@
+{
+  "note": "实测可用的学校清单。id 是上游的 areaId；balance/bill/detail 表示实测支持到哪一层。",
+  "updated_at": "2026-07-28T15:25:10",
+  "count": 55,
+  "schools": [
+    {
+      "id": "5",
+      "name": "爱久公寓",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "54",
+      "name": "广东工业大学(大学城东西区/东风路/龙洞校区)",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "55",
+      "name": "四川音乐学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "57",
+      "name": "临沂大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "59",
+      "name": "陕西师范大学雁塔校区",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "61",
+      "name": "广州新华学院",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "64",
+      "name": "北部湾职业技术学校",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "67",
+      "name": "广西水产畜牧学校",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "71",
+      "name": "广西现代职业技术学院",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "72",
+      "name": "四川农业大学都江堰校区",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "73",
+      "name": "浙江大学海宁校区",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "74",
+      "name": "浙江工商大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "75",
+      "name": "花果园购物中心",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "78",
+      "name": "西安建筑科技大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "80",
+      "name": "中国科学技术大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "81",
+      "name": "江西生物科技职业学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "82",
+      "name": "江西应用技术职业学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "83",
+      "name": "江西师范大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "86",
+      "name": "西安美术学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "87",
+      "name": "桂林电子科技大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "92",
+      "name": "广西农业职业技术大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "94",
+      "name": "四川农业大学家属区",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "96",
+      "name": "云南农业大学热带作物学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "97",
+      "name": "浙江工商大学杭州商学院",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "99",
+      "name": "深圳市福田区电通管理服务部",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "101",
+      "name": "华东石油技师学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "102",
+      "name": "赣南师范大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "103",
+      "name": "浙江农林大学暨阳学院",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "104",
+      "name": "广西华侨学校",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "105",
+      "name": "中北大学",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "106",
+      "name": "广东南华工商职业学院广州校区",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "107",
+      "name": "广东南华工商职业学院清远校区",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "109",
+      "name": "新疆师范大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "110",
+      "name": "四川希望城 德禧物业",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "114",
+      "name": "东乡高级技工学校",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "119",
+      "name": "广东南华工商职业学院清远校区教1/学3/5号楼",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "122",
+      "name": "内江师范学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "125",
+      "name": "广州工程技术职业学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "127",
+      "name": "湖南高速铁路职业技术学院(衡阳)",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "128",
+      "name": "广东工业大学(揭阳校区)",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "129",
+      "name": "广西质量工程职业技术学院电控缴费",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "130",
+      "name": "淮阴师范学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "132",
+      "name": "遂宁工程职业学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "135",
+      "name": "成都纺织高等专科学校(邛崃校区)",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "136",
+      "name": "广东工业大学(番禺校区)",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "137",
+      "name": "南昌大学慧苑学生公寓",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "138",
+      "name": "贵州工商职业学院",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "139",
+      "name": "广东轻工职业技术大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "142",
+      "name": "遵义医科大学",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "144",
+      "name": "衡阳中亿汽贸城",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    },
+    {
+      "id": "147",
+      "name": "中国地质大学（北京）",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "148",
+      "name": "云南农业大学(热院水电)",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "149",
+      "name": "赣南医科大学第一临床医学院",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "153",
+      "name": "铜仁幼儿师范高等学校",
+      "balance": true,
+      "bill": true,
+      "detail": true
+    },
+    {
+      "id": "154",
+      "name": "赣州南康远洋未来广场",
+      "balance": true,
+      "bill": false,
+      "detail": true
+    }
+  ]
+}

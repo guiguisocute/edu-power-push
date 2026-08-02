@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>渠道测试 · {{brand}}</title>
+</head>
+
+<body style="margin:0;padding:0;background-color:#fafafa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC',system-ui,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#fafafa;padding:40px 16px;">
+        <tr>
+            <td align="center">
+                <table width="560" cellpadding="0" cellspacing="0" border="0"
+                    style="background-color:#ffffff;border:1px solid #e3e3e3;">
+
+                    <!-- brand header -->
+                    <tr>
+                        <td style="padding:22px 36px;border-bottom:1px solid #efefef;">
+                            <table cellpadding="0" cellspacing="0" border="0">
+                                <tr>
+                                    <td style="vertical-align:middle;padding-right:12px;line-height:0;font-size:0;">
+                                        <!-- Gmail 等会剥掉内联 SVG；用 multipart 内嵌 PNG（cid:brand-mark） -->
+                                        <img src="cid:brand-mark" width="20" height="20" alt="" style="display:block;width:20px;height:20px;border:0;outline:none;text-decoration:none;" />
+                                    </td>
+                                    <td style="vertical-align:middle;">
+                                        <p style="margin:0;font-size:13px;font-weight:600;color:#0a0a0a;letter-spacing:-0.025em;line-height:1.2;">
+                                            {{brand}}
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+
+                    <!-- body -->
+                    <tr>
+                        <td style="padding:36px 36px 28px;">
+
+                            <p style="margin:0 0 14px;font-family:Consolas,'SF Mono',Menlo,monospace;font-size:10px;font-weight:500;letter-spacing:0.2em;color:#8e8e8e;">
+                                CHANNEL TEST
+                            </p>
+
+                            <p style="margin:0 0 10px;font-size:28px;font-weight:600;color:#0a0a0a;letter-spacing:-0.04em;line-height:1.15;">
+                                渠道测试
+                            </p>
+
+                            <p style="margin:0 0 28px;font-size:13.5px;color:#575757;line-height:1.65;">
+                                你好，这是你主动触发的推送渠道核对。以下信息由当前绑定电表与最新读数生成，请确认与宿舍实际情况一致。
+                            </p>
+
+                            <!-- status pill -->
+                            <p style="margin:0 0 28px;">
+                                <span style="display:inline-block;padding:5px 11px;font-size:12px;font-weight:500;color:#0a0a0a;background-color:rgba(10,10,10,0.06);">
+                                    主动触发
+                                </span>
+                            </p>
+
+                            <!-- metrics: balance hero -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #efefef;">
+                                <tr>
+                                    <td style="padding:22px 0 0;">
+                                        <p style="margin:0 0 8px;font-family:Consolas,'SF Mono',Menlo,monospace;font-size:9.5px;font-weight:500;letter-spacing:0.16em;color:#8e8e8e;">
+                                            BALANCE
+                                        </p>
+                                        <p style="margin:0 0 4px;font-size:12px;color:#8e8e8e;">剩余电费</p>
+                                        <p style="margin:0;font-size:36px;font-weight:600;color:#0a0a0a;letter-spacing:-0.045em;line-height:1.1;">
+                                            {{balance}}
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- metrics: updated + location -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;border-top:1px solid #efefef;">
+                                <tr>
+                                    <td width="50%" style="padding:22px 16px 0 0;vertical-align:top;">
+                                        <p style="margin:0 0 8px;font-family:Consolas,'SF Mono',Menlo,monospace;font-size:9.5px;font-weight:500;letter-spacing:0.16em;color:#8e8e8e;">
+                                            UPDATED
+                                        </p>
+                                        <p style="margin:0 0 4px;font-size:12px;color:#8e8e8e;">数据更新时间</p>
+                                        <p style="margin:0;font-size:16px;font-weight:600;color:#0a0a0a;letter-spacing:-0.02em;line-height:1.35;">
+                                            {{updated_at}}
+                                        </p>
+                                    </td>
+                                    <td width="50%" style="padding:22px 0 0 16px;vertical-align:top;border-left:1px solid #efefef;">
+                                        <p style="margin:0 0 8px;font-family:Consolas,'SF Mono',Menlo,monospace;font-size:9.5px;font-weight:500;letter-spacing:0.16em;color:#8e8e8e;">
+                                            LOCATION
+                                        </p>
+                                        <p style="margin:0 0 4px;font-size:12px;color:#8e8e8e;">宿舍位置</p>
+                                        <p style="margin:0;font-size:16px;font-weight:600;color:#0a0a0a;letter-spacing:-0.02em;line-height:1.35;">
+                                            {{location}}
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- metrics: meter -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;border-top:1px solid #efefef;">
+                                <tr>
+                                    <td style="padding:22px 0 0;">
+                                        <p style="margin:0 0 8px;font-family:Consolas,'SF Mono',Menlo,monospace;font-size:9.5px;font-weight:500;letter-spacing:0.16em;color:#8e8e8e;">
+                                            METER
+                                        </p>
+                                        <p style="margin:0 0 4px;font-size:12px;color:#8e8e8e;">电表号</p>
+                                        <p style="margin:0;font-family:Consolas,'SF Mono',Menlo,monospace;font-size:18px;font-weight:600;color:#0a0a0a;letter-spacing:0.04em;line-height:1.35;">
+                                            {{meter}}
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <p style="margin:28px 0 0;font-size:13px;color:#575757;line-height:1.65;">
+                                请核对以上信息是否与当前绑定一致。此消息由已登录用户主动触发，不会修改任何设置。
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- footer -->
+                    <tr>
+                        <td style="padding:20px 36px 28px;border-top:1px solid #efefef;">
+                            <p style="margin:0 0 10px;font-size:12.5px;color:#8e8e8e;line-height:1.5;">
+                                {{brand}}
+                            </p>
+                            <p style="margin:0;font-size:12px;color:#8e8e8e;line-height:1.6;">
+                                如有疑问，可访问 <a href="{{base_url}}"
+                                    style="color:#d6001c;text-decoration:none;">{{base_url}}</a>
+                            </p>
+                        </td>
+                    </tr>
+
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+
+</html>

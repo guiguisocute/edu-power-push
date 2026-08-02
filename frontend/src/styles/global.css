@@ -1,0 +1,576 @@
+/* 全局样式。延续产品原型视觉规则。
+   style-hover 以 .hv-* 工具类落地。 */
+
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --sub: #fafafa;
+  --line: #e3e3e3;
+  --line2: #efefef;
+  --fg: #0a0a0a;
+  --fg2: #575757;
+  --fg3: #8e8e8e;
+  --red: #d6001c;
+  --redsoft: rgba(214, 0, 28, 0.08);
+  --dim: 0.16;
+  /* 热力图与走势图左侧行名列宽度。窄屏由媒体查询收窄。 */
+  --rowlabel: 110px;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #000000;
+  --sub: #0c0c0c;
+  --line: #232323;
+  --line2: #181818;
+  --fg: #ffffff;
+  --fg2: #9a9a9a;
+  --fg3: #666666;
+  --red: #ff3b4e;
+  --redsoft: rgba(255, 59, 78, 0.12);
+  --dim: 0.22;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+}
+body {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+a {
+  color: var(--red);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--fg);
+}
+input,
+button {
+  font-family: inherit;
+}
+input:focus {
+  outline: none;
+  border-color: var(--fg) !important;
+}
+input[type='range'] {
+  accent-color: var(--red);
+}
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fall {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+@keyframes authOverlayIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes authOverlayOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes switchSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.auth-overlay-in {
+  animation: authOverlayIn 0.24s ease both;
+}
+.auth-overlay-out {
+  animation: authOverlayOut 0.22s ease both;
+}
+.auth-form-rise {
+  animation: rise 0.28s ease both;
+}
+.auth-form-fall {
+  animation: fall 0.22s cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+.auth-form-switch {
+  animation: switchSlideIn 0.24s ease both;
+}
+@keyframes toastin {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 12px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+@keyframes drawin {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 图表切换与刷新入场。容器按状态 key 重放。 */
+@keyframes chartin {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 弹出菜单与浮层入场 */
+@keyframes menupop {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.chart-anim {
+  animation: chartin 0.3s ease both;
+}
+/* 概览 hero 内联绑表大号输入框。占位符用分隔线灰度。 */
+.bigfield::placeholder {
+  color: var(--line);
+}
+/* 认证输入框。占位符三级灰。聚焦时下划线加深。 */
+.authfield::placeholder {
+  color: var(--fg3);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.authfield:focus {
+  outline: none;
+  border-bottom-color: var(--fg);
+}
+/* 取数中图标自转（概览刷新按钮） */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+  transform-origin: 50% 50%;
+}
+
+/* ---- 取数中 ----
+   顶部进度线表示系统仍在请求。骨架块表示该区域将有内容。
+   禁止用转圈遮挡内容。 */
+
+/* 进度线来回扫描。不表示具体百分比。 */
+@keyframes lineSweep {
+  0% {
+    transform: translateX(-100%) scaleX(0.35);
+  }
+  50% {
+    transform: translateX(30%) scaleX(0.6);
+  }
+  100% {
+    transform: translateX(200%) scaleX(0.35);
+  }
+}
+.load-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 90;
+  overflow: hidden;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  animation: fadein 0.18s ease both;
+}
+.load-bar > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: 0 50%;
+  background: var(--red);
+  animation: lineSweep 1.15s cubic-bezier(0.5, 0, 0.3, 1) infinite;
+}
+@keyframes fadein {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 骨架块缓慢呼吸。幅度低，避免压过真内容。 */
+@keyframes skelPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.42;
+  }
+}
+.skel {
+  background: var(--line2);
+  animation: skelPulse 1.6s ease-in-out infinite;
+}
+
+/* 减少动效偏好：位置与布局不变，仅停止动画。 */
+@media (prefers-reduced-motion: reduce) {
+  .load-bar > span {
+    animation: none;
+    background: color-mix(in srgb, var(--red) 55%, transparent);
+  }
+  .skel,
+  .spin,
+  .chart-anim {
+    animation: none;
+  }
+  /* 认证浮层进出场跟随系统。both/forwards 直接 animation:none
+     会停在 opacity:0。必须显式恢复可见性。 */
+  .auth-overlay-in,
+  .auth-overlay-out,
+  .auth-form-rise,
+  .auth-form-fall,
+  .auth-form-switch {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- 移动端布局 ----
+   ≤960px 隐藏侧栏，改用顶栏菜单与抽屉侧栏。
+   内容堆叠规则沿用原型。 */
+.m-only-flex,
+.m-only-block {
+  display: none !important;
+}
+@media (max-width: 960px) {
+  .m-only-flex {
+    display: flex !important;
+  }
+  .m-only-block {
+    display: block !important;
+  }
+  [data-r='shell'] {
+    flex-direction: column;
+  }
+  [data-r='side'] {
+    display: none !important;
+  }
+  [data-r='top'] {
+    padding: 0 16px !important;
+    gap: 12px !important;
+  }
+  [data-r='pad'] {
+    padding: 0 20px 84px !important;
+  }
+  [data-r='split'] {
+    grid-template-columns: 1fr !important;
+  }
+  [data-r='split'] > div {
+    border-left: none !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    border-top: 1px solid var(--line);
+    padding-top: 28px !important;
+    margin-top: 30px;
+  }
+  [data-r='split'] > div:first-child {
+    border-top: none;
+    padding-top: 0 !important;
+    margin-top: 0;
+  }
+
+  [data-r='stats-split'] {
+    display: grid !important;
+    grid-template-columns: repeat(4, 1fr) !important;
+    width: 100% !important;
+    padding: 20px 0 !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+  }
+  [data-r='stats-split'] > div {
+    padding: 0 4px !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+  }
+  [data-r='hero'] {
+    grid-template-columns: 1fr !important;
+  }
+  [data-r='heroside'] {
+    border-left: none !important;
+    border-top: 1px solid var(--line);
+    padding-left: 0 !important;
+    padding-top: 22px !important;
+  }
+  [data-r='scroll'] {
+    overflow-x: auto;
+  }
+  [data-r='hidesm'] {
+    display: none !important;
+  }
+  /* ---- 窄屏标题与控件竖直堆叠、全部左对齐 ----
+     内联 marginLeft:auto 必须用 !important 覆盖。 */
+  [data-r='hdr'] {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 14px !important;
+  }
+  [data-r='hdrside'] {
+    margin-left: 0 !important;
+    align-self: flex-start !important;
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+    max-width: 100%;
+  }
+  /* 窄屏侧栏面板全宽。固定宽度会留空白。 */
+  [data-r='heatside'] {
+    width: auto !important;
+    max-width: none !important;
+    flex: 1 1 auto !important;
+  }
+  /* 热力图与走势行名列。手机上 110px 会挤没格子。 */
+  :root,
+  [data-theme] {
+    --rowlabel: 62px;
+  }
+
+  /* ---- 用电构成表：左侧身份列 sticky，SHARE 收窄 ---- */
+  .mix-table {
+    min-width: 560px !important;
+  }
+  .mix-sticky {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: var(--bg);
+    box-shadow: 6px 0 8px -6px color-mix(in srgb, var(--fg) 18%, transparent);
+    padding-right: 8px;
+  }
+  .mix-share {
+    flex: 0 0 56px !important;
+    max-width: 56px !important;
+  }
+
+  /* ---- 排行榜：去掉横向滚动，改为可换行紧凑布局 ---- */
+  .board-me-wrap,
+  .board-list-wrap {
+    overflow-x: visible !important;
+  }
+  .board-me {
+    flex-wrap: wrap !important;
+    gap: 12px 16px !important;
+    padding: 14px 14px !important;
+    min-width: 0 !important;
+  }
+  .board-me-rank {
+    width: auto !important;
+    min-width: 72px;
+  }
+  .board-me-meta {
+    flex: 1 1 160px !important;
+    min-width: 0 !important;
+  }
+  .board-me-val {
+    align-items: flex-start !important;
+  }
+  .board-me-cta {
+    width: 100%;
+    text-align: center;
+  }
+  .board-list {
+    min-width: 0 !important;
+  }
+  .board-head {
+    display: none !important;
+  }
+  .board-row {
+    flex-wrap: wrap !important;
+    gap: 6px 12px !important;
+    padding: 12px 0 !important;
+    align-items: flex-start !important;
+  }
+  .board-row-rank {
+    width: 28px !important;
+  }
+  .board-row-name {
+    width: auto !important;
+    flex: 1 1 auto !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+    max-width: calc(100% - 40px);
+  }
+  .board-row-place {
+    order: 3;
+    flex: 1 1 100% !important;
+    width: 100% !important;
+    padding-left: 40px;
+    box-sizing: border-box;
+    white-space: normal !important;
+    line-height: 1.35;
+  }
+  .board-row-bar {
+    order: 4;
+    width: auto !important;
+    flex: 1 1 calc(100% - 88px) !important;
+    min-width: 0 !important;
+    padding-left: 40px;
+    box-sizing: border-box;
+  }
+  .board-row-delta {
+    order: 5;
+    width: auto !important;
+    min-width: 56px;
+    padding-top: 0;
+    align-self: center;
+  }
+}
+@media (max-width: 1200px) {
+  [data-r='heatside'] {
+    width: auto !important;
+    max-width: none !important;
+  }
+}
+@media (max-width: 1200px) {
+  [data-r='heatwrap'] {
+    flex-direction: column;
+  }
+  [data-r='heatside'] {
+    border-left: none !important;
+    padding-left: 0 !important;
+    margin-left: 0 !important;
+    border-top: 1px solid var(--line);
+    padding-top: 26px;
+    margin-top: 26px !important;
+  }
+  [data-r='calwrap'] {
+    flex-direction: column;
+  }
+  [data-r='calside'] {
+    border-left: none !important;
+    padding-left: 0 !important;
+    margin-left: 0 !important;
+    border-top: 1px solid var(--line);
+    padding-top: 26px;
+    margin-top: 26px !important;
+  }
+}
+
+/* ---- MonthWindowPicker：外框发丝边，框内 select 不再套框 ---- */
+.mwp-select:hover {
+  color: var(--red);
+}
+.mwp-select:focus-visible {
+  outline: 1px solid var(--fg);
+  outline-offset: 2px;
+}
+
+/* ---- BasisSwitch：激活项红下划线，不用边框与底色 ---- */
+.basis-btn {
+  position: relative;
+  margin: 0;
+  padding: 5px 1px 7px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--fg3);
+  cursor: pointer;
+  transition: color 0.16s;
+}
+.basis-btn:hover {
+  color: var(--fg2);
+}
+.basis-btn[data-on='1'] {
+  color: var(--fg);
+  font-weight: 600;
+}
+.basis-btn::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--red);
+  transform: scaleX(0);
+  transition: transform 0.18s ease;
+}
+.basis-btn[data-on='1']::after {
+  transform: scaleX(1);
+}
+
+/* ---- style-hover 工具类（原型 style-hover 等价） ---- */
+.hv-fg:hover {
+  color: var(--fg) !important;
+}
+.hv-line-fg:hover {
+  border-color: var(--fg) !important;
+  color: var(--fg) !important;
+}
+.hv-op82:hover {
+  opacity: 0.82 !important;
+}
+.hv-op68:hover {
+  opacity: 0.68 !important;
+}
+.hv-op72:hover {
+  opacity: 0.72 !important;
+}
+.hv-sub:hover {
+  background: var(--sub) !important;
+}
+.hv-red:hover {
+  border-color: var(--red) !important;
+  color: var(--red) !important;
+}

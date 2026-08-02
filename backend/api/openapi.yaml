@@ -1,0 +1,5303 @@
+openapi: 3.1.0
+info:
+  title: EDU Power Push Backend API
+  version: 1.0.0
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  description: |
+    API for campus electricity scanning, product user accounts, personal and
+    campus statistics, push notifications, and the operator admin panel.
+    Processes bind to loopback by default (Compose maps only 127.0.0.1). Public
+    access is same-origin reverse proxy + TLS; operators may also use an SSH
+    tunnel. Campus aggregates (`/api/v1/campus/*`) are anonymous; personal data
+    uses short-lived access JWTs; admin and raw meter endpoints require an
+    operator/admin session or `ADMIN_TOKEN` (never ship that token in a browser build).
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - bearerAuth: []
+tags:
+  - name: System
+    description: Process and dependency health.
+  - name: Inventory
+    description: Manual room-to-meter inventory validation and querying.
+  - name: Meters
+    description: Internal per-meter balance, usage, and bill data.
+  - name: Campus
+    description: >
+      Campus, building, and floor aggregates for the product frontend. Building 16 is retained
+      in operational storage and scanning but is excluded from every product aggregate because
+      it is not currently billed through this platform.
+  - name: Operations
+    description: Internal scan runs, progress, results, and data anomalies.
+  - name: Mail
+    description: Internal notification-provider testing.
+  - name: Auth
+    description: Product-user email/password authentication and rotating JWT sessions.
+  - name: Users
+    description: Product-user profile and meter binding.
+  - name: Frontend
+    description: Non-secret product feature flags and display configuration.
+  - name: Admin
+    description: >
+      Web admin panel. Authorised by account role (operator/admin) checked per request, or by
+      ADMIN_TOKEN for machines. See docs/ADMIN-PANEL.md.
+
+paths:
+  /health/live:
+    get:
+      tags: [System]
+      operationId: getLiveness
+      summary: Check whether the API process is alive
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /health/ready:
+    get:
+      tags: [System]
+      operationId: getReadiness
+      summary: Check database, migrations, and worker heartbeat
+      security: []
+      responses:
+        "200":
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/frontend-config:
+    get:
+      tags: [Frontend]
+      operationId: getFrontendConfig
+      summary: Get non-secret product feature flags and display configuration
+      security: []
+      responses:
+        "200":
+          description: Current frontend configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FrontendConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/captcha/config:
+    get:
+      tags: [Frontend]
+      operationId: getCaptchaConfig
+      summary: Get the active public human-verification configuration
+      description: Returns no provider secret. Clients use the action list to decide where a challenge is required.
+      security: []
+      responses:
+        "200":
+          description: Public CAPTCHA configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptchaPublicConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/auth/register/code:
+    post:
+      tags: [Auth]
+      operationId: requestRegistrationCode
+      summary: Send a short-lived email verification code for registration
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/CaptchaToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        "204":
+          description: Verification code sent
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Email is already registered; the user should sign in instead
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          description: Mail provider failed to deliver
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      operationId: registerUser
+      summary: Register an email/password account and claim an eligible inventory meter
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Account and session created; the rotating refresh JWT is set as an HttpOnly cookie
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Email is already registered or the meter is bound to another account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: loginUser
+      summary: Authenticate with email and password
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/CaptchaToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Access JWT returned and rotating refresh JWT set as an HttpOnly cookie
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/CaptchaRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/auth/oauth/{provider}/start:
+    get:
+      tags: [Auth]
+      operationId: startOAuthLogin
+      summary: Redirect the browser to Google or GitHub for authorization
+      description: >
+        Top-level navigation, not fetch: the response is always a 302. Failures redirect
+        back to the site with `?oauth_error=<reason>` instead of returning JSON, because a
+        JSON body would be rendered as the page the user is looking at. Stores the flow
+        state and PKCE verifier in a short-lived `SameSite=Lax` cookie.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/OAuthProvider"
+        - name: next
+          in: query
+          required: false
+          description: Same-site path to return to; anything else falls back to `/`
+          schema: { type: string, maxLength: 200 }
+      responses:
+        "302":
+          description: Redirect to the provider, or back to the site carrying `oauth_error`
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              schema: { type: string }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/oauth/{provider}/callback:
+    get:
+      tags: [Auth]
+      operationId: completeOAuthLogin
+      summary: Complete the authorization-code exchange and open a session
+      description: >
+        Verifies the state cookie, exchanges the code, then links the provider identity to
+        an account (matching by *verified* email) or creates one. On success it sets the
+        refresh cookie only and redirects to `next` with `?oauth=<provider>&oauth_result=`
+        `created|linked|signed_in`; the SPA then calls `/api/v1/auth/refresh` for its access
+        token. The access token is never placed in the URL. Failures redirect with
+        `oauth_error` set to one of `denied`, `state`, `exchange`, `email_missing`,
+        `email_unverified`, `registration_disabled`, `conflict`, `account_disabled`,
+        `disabled_entry`, `unavailable`.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/OAuthProvider"
+        - name: code
+          in: query
+          required: false
+          schema: { type: string }
+        - name: state
+          in: query
+          required: false
+          schema: { type: string }
+        - name: error
+          in: query
+          required: false
+          description: Set by the provider when the user cancels or authorization is refused
+          schema: { type: string }
+      responses:
+        "302":
+          description: Redirect back to the site; the refresh cookie is set only on success
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              schema: { type: string }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshUserToken
+      summary: Rotate the refresh JWT and issue a new access JWT
+      security:
+        - refreshCookie: []
+      responses:
+        "200":
+          description: Refresh session rotated
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "401":
+          description: Refresh token invalid, expired, revoked, or reused; reuse revokes its session family
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logoutUser
+      summary: Revoke the current refresh-token family and clear its cookie
+      security:
+        - refreshCookie: []
+      responses:
+        "204":
+          description: Session revoked or already absent
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/password/forgot:
+    post:
+      tags: [Auth]
+      operationId: requestPasswordReset
+      summary: Send a password-reset code; always 204 to prevent account enumeration
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/CaptchaToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        "204":
+          description: Accepted regardless of account existence, resend state, or asynchronous delivery outcome
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/CaptchaRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/auth/password/reset:
+    post:
+      tags: [Auth]
+      operationId: resetPassword
+      summary: Reset the password with an emailed code and revoke all sessions
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code, password]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                code: { type: string, pattern: "^[0-9]{6}$" }
+                password: { type: string, format: password, minLength: 8, maxLength: 128 }
+      responses:
+        "204":
+          description: Password reset; all refresh-token families and their access tokens revoked
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/me:
+    get:
+      tags: [Users]
+      operationId: getCurrentUser
+      summary: Get the authenticated user and active meter binding
+      security:
+        - userAccessToken: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    delete:
+      tags: [Users]
+      operationId: deleteCurrentUser
+      summary: Delete the authenticated account
+      description: >
+        注销账号。需要当前密码：不可逆动作，只有一个未过期的 access token 不够。
+
+        随账号一起删除的是账号自己的东西 —— 绑表记录、会话、榜单偏好、
+        推送规则与渠道（含密文）、推送日志；删掉绑表记录顺带把电表放开，
+        这间宿舍换人住之后才绑得上。
+
+        电表读数 / 差值 / 月账单挂在电表上，属于全校用电的底账，一行都不动。
+
+        最后一个 admin 账号不许注销（409 last_admin）：面板会没人进得去。
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+      responses:
+        "204":
+          description: Account deleted; the refresh cookie is cleared
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: The last admin account cannot be deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/me/meter:
+    put:
+      tags: [Users]
+      operationId: rebindCurrentUserMeter
+      summary: Replace the authenticated user's active meter binding
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meter]
+              additionalProperties: false
+              properties:
+                meter:
+                  type: string
+                  pattern: "^[0-9]{6,32}$"
+      responses:
+        "200":
+          description: Updated user and meter binding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Meter is bound to another account or its building is not served by this platform
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/me/meter/preview:
+    get:
+      tags: [Users]
+      operationId: previewMeterForBinding
+      summary: Location preview for meter confirmation before binding
+      description: >
+        Lets a signed-in user verify a dormitory address before committing a binding.
+        Never includes balance or any reading; the meter does not belong to the caller yet.
+        Rate limited per user rather than per IP.
+      security:
+        - userAccessToken: []
+      parameters:
+        - $ref: "#/components/parameters/CaptchaToken"
+        - name: meter
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9]{6,32}$"
+      responses:
+        "200":
+          description: Location and claimability
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterPreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/CaptchaRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/me/leaderboard:
+    get:
+      tags: [Users]
+      operationId: getCurrentUserLeaderboardPreference
+      summary: Get leaderboard participation and identity masking
+      security:
+        - userAccessToken: []
+      responses:
+        "200":
+          description: Current preference, or the defaults when the user has never saved one
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaderboardPreference"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [Users]
+      operationId: updateCurrentUserLeaderboardPreference
+      summary: Update leaderboard participation and identity masking
+      description: >
+        Partial update: omitted fields keep their current value, so a client that does not know
+        about a newer field cannot silently reset it.
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                opted_in: { type: boolean }
+                show_building: { type: boolean }
+                show_floor: { type: boolean }
+                show_room: { type: boolean }
+                show_nickname: { type: boolean }
+                mask_building: { type: boolean }
+                mask_floor: { type: boolean }
+                mask_room: { type: boolean }
+      responses:
+        "200":
+          description: Saved preference
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaderboardPreference"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/me/profile:
+    put:
+      tags: [Users]
+      operationId: updateCurrentUserProfile
+      summary: Update nickname
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nickname]
+              additionalProperties: false
+              properties:
+                nickname: { type: string, maxLength: 80 }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/me/password:
+    put:
+      tags: [Users]
+      operationId: changeCurrentUserPassword
+      summary: Change password; revokes all sessions
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              additionalProperties: false
+              properties:
+                current_password: { type: string, format: password }
+                new_password: { type: string, format: password, minLength: 8, maxLength: 128 }
+      responses:
+        "204":
+          description: Password changed; all sessions revoked
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/me/email/code:
+    post:
+      tags: [Users]
+      operationId: requestEmailChangeCode
+      summary: Send verification code to a new email address
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        "204":
+          description: Code sent
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/me/email:
+    put:
+      tags: [Users]
+      operationId: changeCurrentUserEmail
+      summary: Change login email with code and current password
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code, password]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                code: { type: string, pattern: "^[0-9]{6}$" }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Email updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/me/channels/mail/recipient/code:
+    post:
+      tags: [Users]
+      operationId: requestMailRecipientCode
+      summary: Send a verification code before adding a notification recipient
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        "204":
+          description: Code sent to the prospective recipient
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/me/channels/mail/recipient/verify:
+    post:
+      tags: [Users]
+      operationId: verifyMailRecipient
+      summary: Verify ownership of an additional notification recipient
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              additionalProperties: false
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                code: { type: string, pattern: "^[0-9]{6}$" }
+      responses:
+        "200":
+          description: Recipient verified for the current user
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [email]
+                additionalProperties: false
+                properties:
+                  email: { type: string, format: email }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/me/channels:
+    get:
+      tags: [Users]
+      operationId: listCurrentUserChannels
+      summary: List notification channel configurations (secrets masked)
+      security:
+        - userAccessToken: []
+      responses:
+        "200":
+          description: Channel configurations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [Users]
+      operationId: replaceCurrentUserChannels
+      summary: Bulk update notification channel configurations
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelList"
+      responses:
+        "200":
+          description: Updated configurations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/me/channels/{channel}:
+    put:
+      tags: [Users]
+      operationId: updateCurrentUserChannel
+      summary: Update one notification channel; omitted secret fields keep their stored value
+      security:
+        - userAccessToken: []
+      parameters:
+        - $ref: "#/components/parameters/ChannelId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChannelUpdate"
+      responses:
+        "200":
+          description: Updated channel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Channel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/me/channels/{channel}/test:
+    post:
+      tags: [Users]
+      operationId: testCurrentUserChannel
+      summary: Send current balance, data time, location, and meter ID through a configured channel, even when delivery is disabled
+      security:
+        - userAccessToken: []
+      parameters:
+        - $ref: "#/components/parameters/ChannelId"
+      responses:
+        "200":
+          description: Delivery attempted; see status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTestResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Channel is unavailable, unsupported, or has no saved configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/me/notification-settings:
+    get:
+      tags: [Users]
+      operationId: getCurrentUserNotificationSettings
+      summary: Get low-balance alert and scheduled digest rules
+      security:
+        - userAccessToken: []
+      responses:
+        "200":
+          description: Notification rules
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationSettings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      tags: [Users]
+      operationId: replaceCurrentUserNotificationSettings
+      summary: Replace low-balance alert and scheduled digest rules
+      security:
+        - userAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationSettings"
+      responses:
+        "200":
+          description: Updated rules
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationSettings"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/me/push-logs:
+    get:
+      tags: [Users]
+      operationId: listCurrentUserPushLogs
+      summary: Recent push delivery history
+      description: >-
+        Newest first. Page through older entries with the opaque `next_cursor` from the
+        previous response; a null cursor means there is nothing older.
+      security:
+        - userAccessToken: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 5 }
+        - name: cursor
+          in: query
+          description: Opaque cursor returned as `next_cursor` by the previous page.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Push history page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PushLogPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/me/overview:
+    get:
+      tags: [Users]
+      operationId: getCurrentUserMeterOverview
+      summary: Get balance and quality for the authenticated user's bound meter
+      security:
+        - userAccessToken: []
+      responses:
+        "200":
+          description: Bound-meter overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterOverview"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: User has no active meter binding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/me/refresh:
+    post:
+      tags: [Users]
+      operationId: refreshCurrentUserMeter
+      summary: Fetch and store one on-demand upstream reading for the bound meter
+      description: >
+        The server enforces a 30-second per-meter cooldown. Single-meter refreshes run in
+        their own upstream lane, so a campus scan or monthly reconciliation no longer blocks
+        them. status upstream_unavailable now means what it says: the upstream returned no
+        usable reading, or the refresh lane was saturated, and the last stored reading is
+        returned instead.
+      security:
+        - userAccessToken: []
+      responses:
+        "200":
+          description: Refresh attempted; inspect status for refreshed, cached, or degraded outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterRefresh"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: User has no active meter binding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/me/series:
+    get:
+      tags: [Users]
+      operationId: getCurrentUserMeterSeries
+      summary: Get balance or consumption series for the authenticated user's bound meter
+      security:
+        - userAccessToken: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Granularity"
+        - name: metric
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [balance, consumption]
+      responses:
+        "200":
+          description: Bound-meter time series
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeSeries"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/me/day-night:
+    get:
+      tags: [Users]
+      operationId: getCurrentUserMeterDayNight
+      summary: Split the bound meter's consumption into daytime and night-time
+      description: |
+        Derived from scan intervals (`consumption_deltas`), not from the official daily
+        usage that `/me/series` returns: the upstream only refreshes a meter's cumulative
+        reading about twice a day, so the finest split we can honestly offer is
+        "between two readings".
+
+        Each interval is labelled as a whole by the window that covers most of its
+        duration; kWh are never split proportionally across the 06:00/18:00 boundary.
+        `purity` reports how much of the counted duration really falls inside its window,
+        and `availability` is `unavailable` / `insufficient_history` when the reading
+        times do not line up well enough to support the comparison at all.
+      security:
+        - userAccessToken: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+      responses:
+        "200":
+          description: Daytime / night-time split for the bound meter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DayNightSplit"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/me/bills:
+    get:
+      tags: [Users]
+      operationId: listCurrentUserMeterBills
+      summary: List stored monthly bills for the authenticated user's bound meter
+      security:
+        - userAccessToken: []
+      parameters:
+        - name: from_month
+          in: query
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}$"
+        - name: to_month
+          in: query
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}$"
+      responses:
+        "200":
+          description: Stored bills for the bound meter
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MonthlyBill"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/admin/overview:
+    get:
+      tags: [Operations]
+      operationId: getAdminOverview
+      summary: Get operational overview for the internal admin page
+      responses:
+        "200":
+          description: Operational overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminOverview"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/admin/scan-runs:
+    get:
+      tags: [Operations]
+      operationId: listScanRuns
+      summary: List scan runs
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ScanRunStatus"
+      responses:
+        "200":
+          description: Scan run page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanRunPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Operations]
+      operationId: createScanRun
+      summary: Start a controlled scan run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScanRunRequest"
+      responses:
+        "200":
+          description: Dry-run scope validation result; no scan run is created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanDryRun"
+        "202":
+          description: Scan run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Another campus scan is running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/scan-runs/{run_id}:
+    get:
+      tags: [Operations]
+      operationId: getScanRun
+      summary: Get one scan run and its progress
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Scan run detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/scan-runs/{run_id}/results:
+    get:
+      tags: [Operations]
+      operationId: listScanResults
+      summary: List final per-meter results for one scan run
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ScanResultStatus"
+      responses:
+        "200":
+          description: Scan result page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanResultPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/scan-runs/{run_id}/retry:
+    post:
+      tags: [Operations]
+      operationId: retryScanRun
+      summary: Create a new run for a failed subset
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryScanRunRequest"
+      responses:
+        "202":
+          description: Retry run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Another campus scan is running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/scan-runs/{run_id}/cancel:
+    post:
+      tags: [Operations]
+      operationId: cancelScanRun
+      summary: Request cancellation of an in-flight balance scan run
+      description: >
+        Marks the run for cancellation and returns immediately. The worker
+        notices on its next heartbeat, stops dispatching new meters, lets
+        in-flight ones finish, and finalizes the run as `canceled`. A canceled
+        run is terminal and is never auto-resumed, unlike `interrupted`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "202":
+          description: Cancellation requested; the run may still report `running` until the worker stops it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The run has already finished
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/bill-runs:
+    get:
+      tags: [Operations]
+      operationId: listBillRuns
+      summary: List visible-month bill collection and reconciliation runs
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ScanRunStatus"
+      responses:
+        "200":
+          description: Bill run page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillRunPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Operations]
+      operationId: createBillRun
+      summary: Start a controlled visible-month bill run
+      description: >-
+        Freezes the current eligible meter set and the upstream-visible month set
+        (January through the current month plus all twelve months of the previous year).
+        Bill runs and balance scans never use the upstream concurrently.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBillRunRequest"
+      responses:
+        "200":
+          description: Dry-run scope and HTTP request estimate; no run is created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillDryRun"
+        "202":
+          description: Bill run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillRun"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: A scan or bill run already owns the upstream job slot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/bill-runs/{run_id}:
+    get:
+      tags: [Operations]
+      operationId: getBillRun
+      summary: Get bill run progress and reconciliation counters
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Bill run detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/bill-runs/{run_id}/results:
+    get:
+      tags: [Operations]
+      operationId: listBillResults
+      summary: List per-meter results for a bill run
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/BillResultStatus"
+      responses:
+        "200":
+          description: Bill result page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillResultPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/bill-runs/{run_id}/retry:
+    post:
+      tags: [Operations]
+      operationId: retryBillRun
+      summary: Retry only failed or incomplete meters from a terminal bill run
+      description: >-
+        Creates an auditable child run with the parent's frozen month set and only
+        meters whose parent result matches one of the requested retry statuses.
+        Existing observations are never deleted or overwritten.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryBillRunRequest"
+      responses:
+        "202":
+          description: Bill retry child run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillRun"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A scan or bill run already owns the upstream job slot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/bill-runs/{run_id}/cancel:
+    post:
+      tags: [Operations]
+      operationId: cancelBillRun
+      summary: Request cancellation of an in-flight monthly bill run
+      description: >
+        Marks the run for cancellation and returns immediately. The worker
+        notices on its next heartbeat, stops dispatching new meters, lets
+        in-flight ones finish, and finalizes the run as `canceled`. A canceled
+        run is terminal and is never auto-resumed, unlike `interrupted`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "202":
+          description: Cancellation requested; the run may still report `running` until the worker stops it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The run has already finished
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/daily-detail-runs:
+    get:
+      tags: [Operations]
+      operationId: listDailyDetailRuns
+      summary: List official daily-detail collection runs
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ScanRunStatus"
+      responses:
+        "200":
+          description: Daily-detail run page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyDetailRunPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Operations]
+      operationId: createDailyDetailRun
+      summary: Start a controlled official daily-detail run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDailyDetailRunRequest"
+      responses:
+        "200":
+          description: Dry-run scope and request estimate
+        "202":
+          description: Daily-detail run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyDetailRun"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Another school-wide upstream job is active
+
+  /api/v1/admin/daily-detail-runs/{run_id}:
+    get:
+      tags: [Operations]
+      operationId: getDailyDetailRun
+      summary: Get official daily-detail run progress
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Daily-detail run detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyDetailRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/daily-detail-runs/{run_id}/results:
+    get:
+      tags: [Operations]
+      operationId: listDailyDetailResults
+      summary: List per-meter results for an official daily-detail run
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [valid, no_data, partial, empty, error, canceled]
+      responses:
+        "200":
+          description: Daily-detail result page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyDetailResultPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/daily-detail-runs/{run_id}/retry:
+    post:
+      tags: [Operations]
+      operationId: retryDailyDetailRun
+      summary: Retry failed or incomplete meters from a terminal daily-detail run
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryDailyDetailRunRequest"
+      responses:
+        "202":
+          description: Daily-detail retry child run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyDetailRun"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Another school-wide upstream job is active
+
+  /api/v1/admin/bill-revisions:
+    get:
+      tags: [Operations]
+      operationId: listBillRevisions
+      summary: List historical bill value changes requiring operator review
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+        - name: acknowledged
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Bill revision page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillRevisionPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/admin/bill-revisions/{revision_id}:
+    patch:
+      tags: [Operations]
+      operationId: acknowledgeBillRevision
+      summary: Acknowledge a reconciled historical bill change
+      parameters:
+        - name: revision_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [acknowledged, note]
+              properties:
+                acknowledged: {type: boolean}
+                note: {type: string, maxLength: 1000}
+      responses:
+        "200":
+          description: Updated bill revision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillRevision"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/anomalies:
+    get:
+      tags: [Operations]
+      operationId: listAnomalies
+      summary: List detected data anomalies
+      description: Critical anomalies are returned before warning and info anomalies; items of equal severity are newest first.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+        - name: acknowledged
+          in: query
+          schema:
+            type: boolean
+        - name: type
+          in: query
+          schema:
+            $ref: "#/components/schemas/AnomalyType"
+      responses:
+        "200":
+          description: Anomaly page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnomalyPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/admin/anomalies/{anomaly_id}:
+    patch:
+      tags: [Operations]
+      operationId: acknowledgeAnomaly
+      summary: Acknowledge an anomaly and attach an operator note
+      parameters:
+        - name: anomaly_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [acknowledged, note]
+              properties:
+                acknowledged:
+                  type: boolean
+                note:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "200":
+          description: Updated anomaly
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Anomaly"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/inventory/imports:
+    get:
+      tags: [Inventory]
+      operationId: listInventoryImports
+      summary: List manual inventory imports
+      responses:
+        "200":
+          description: Import history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InventoryImport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Inventory]
+      operationId: applyInventoryImport
+      summary: Apply a previously validated inventory import
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [validation_id]
+              properties:
+                validation_id:
+                  type: string
+                  format: uuid
+      responses:
+        "201":
+          description: Import applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryImport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Validation is stale or already applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/daily-detail-runs/{run_id}/cancel:
+    post:
+      tags: [Operations]
+      operationId: cancelDailyDetailRun
+      summary: Request cancellation of an in-flight daily detail run
+      description: >
+        Marks the run for cancellation and returns immediately. The worker
+        notices on its next heartbeat, stops dispatching new meters, lets
+        in-flight ones finish, and finalizes the run as `canceled`. A canceled
+        run is terminal and is never auto-resumed, unlike `interrupted`.
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "202":
+          description: Cancellation requested; the run may still report `running` until the worker stops it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyDetailRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The run has already finished
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/inventory/imports/validate:
+    post:
+      tags: [Inventory]
+      operationId: validateInventoryImport
+      summary: Validate an inventory JSON file without changing active inventory
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryValidation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/inventory/tree:
+    get:
+      tags: [Inventory]
+      operationId: getInventoryTree
+      summary: Get campus, building, floor, and room hierarchy
+      parameters:
+        - name: include_excluded
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Inventory tree and coverage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryTree"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/meters/{meter}/overview:
+    get:
+      tags: [Meters]
+      operationId: getMeterOverview
+      summary: Get latest balance and recent consumption summary for a meter
+      parameters:
+        - $ref: "#/components/parameters/Meter"
+      responses:
+        "200":
+          description: Meter overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterOverview"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/meters/{meter}/refresh:
+    post:
+      tags: [Meters]
+      operationId: refreshMeter
+      summary: Fetch and store one on-demand upstream reading for a meter
+      parameters:
+        - $ref: "#/components/parameters/Meter"
+      responses:
+        "200":
+          description: Refresh attempted; inspect status for refreshed, cached, or degraded outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterRefresh"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/meters/{meter}/series:
+    get:
+      tags: [Meters]
+      operationId: getMeterSeries
+      summary: Get balance or consumption series for a meter
+      parameters:
+        - $ref: "#/components/parameters/Meter"
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Granularity"
+        - name: metric
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [balance, consumption]
+      responses:
+        "200":
+          description: Meter series
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeSeries"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/meters/{meter}/bills:
+    get:
+      tags: [Meters]
+      operationId: listMeterBills
+      summary: List monthly bills already collected for a meter
+      parameters:
+        - $ref: "#/components/parameters/Meter"
+        - name: from_month
+          in: query
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}$"
+        - name: to_month
+          in: query
+          schema:
+            type: string
+            pattern: "^[0-9]{4}-[0-9]{2}$"
+      responses:
+        "200":
+          description: Monthly bills
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MonthlyBill"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/campus/scopes:
+    get:
+      tags: [Campus]
+      operationId: getCampusScopes
+      summary: Lightweight campus, building, and floor list for frontend filters
+      description: >
+        Contains only buildings and floors that hold eligible (active, not excluded) meters,
+        which is the same denominator campus/series and campus/rankings use, so every option
+        returns data. Buildings not currently billed through this platform (currently Building 16)
+        are omitted even though their meters continue to be scanned and stored. Floor strings are
+        byte-identical to the building/floor query parameters.
+      security: []
+      responses:
+        "200":
+          description: Scope tree limited to buildings and floors with eligible meters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampusScopes"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/campus/summary:
+    get:
+      tags: [Campus]
+      operationId: getCampusSummary
+      summary: Get aggregate electricity summary for a campus scope
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Building"
+        - $ref: "#/components/parameters/Floor"
+      responses:
+        "200":
+          description: Campus summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampusSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/campus/series:
+    get:
+      tags: [Campus]
+      operationId: getCampusSeries
+      summary: Get aggregate day, week, or month series
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - $ref: "#/components/parameters/Granularity"
+        - $ref: "#/components/parameters/Building"
+        - $ref: "#/components/parameters/Floor"
+      responses:
+        "200":
+          description: Aggregate series
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeSeries"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/campus/rankings:
+    get:
+      tags: [Campus]
+      operationId: getCampusRankings
+      summary: Get period rankings using interval consumption, never cumulative kWh
+      description: >
+        Semi-static completed-period rankings. Day switches daily, week switches Monday, and month
+        switches on the first day at display.ranking_refresh_time (APP_TIMEZONE; default 09:00).
+        Responses are held in an account-isolated server cache until the next scheduled switch.
+      security: []
+      parameters:
+        - name: period
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [day, week, month]
+        - name: mode
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [usage, saving, surge, drop]
+        - $ref: "#/components/parameters/Building"
+        - $ref: "#/components/parameters/Floor"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Ranking result
+          headers:
+            X-Ranking-Cache:
+              description: HIT when served without recomputing the ranking query; MISS on the first request for a cache key.
+              schema:
+                type: string
+                enum: [HIT, MISS]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ranking"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/campus/breakdown:
+    get:
+      tags: [Campus]
+      operationId: getCampusBreakdown
+      summary: Consumption matrix by building (or by floor within one building) over time
+      description: >
+        One query feeds two views: row totals drive the consumption mix, and the row-by-bucket
+        cells drive the heatmap. The grouping dimension follows the scope — without `building`
+        it groups by building, with `building` it groups by that building's floors. Splitting by
+        building *type* (dormitory / teaching / lab) is not offered: the inventory only contains
+        dormitory meters, so any such split would be invented.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month]
+            default: day
+        - $ref: "#/components/parameters/Building"
+      responses:
+        "200":
+          description: Consumption matrix
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampusBreakdown"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/campus/bills:
+    get:
+      tags: [Campus]
+      operationId: getCampusBills
+      summary: Campus-wide monthly consumption from official bills
+      description: >
+        Monthly totals sourced from `monthly_bills` — the upstream's official figures. Daily
+        series use the separate official `electricdetail` feed for settled natural days and fall
+        back to scan-derived estimates only for the not-yet-settled current day. The monthly feed
+        remains an independent reconciliation source and records upstream restatements.
+
+
+        Kept as a separate endpoint from `/campus/series` because the granularity differs
+        (month vs day), not because the two are equally trustworthy — plotting them on one line
+        would suggest they can be compared point by point. Bills are re-fetched continuously by
+        the biller (`BILL_CRON`, daily from the 2nd) and upstream restatements are recorded in
+        `bill_revisions`.
+      security: []
+      parameters:
+        - name: from_month
+          in: query
+          description: Inclusive lower bound, `YYYY-MM`. Omit for no lower bound.
+          schema:
+            type: string
+            pattern: '^[0-9]{4}-[0-9]{2}$'
+        - name: to_month
+          in: query
+          description: Inclusive upper bound, `YYYY-MM`. Omit for no upper bound.
+          schema:
+            type: string
+            pattern: '^[0-9]{4}-[0-9]{2}$'
+        - $ref: "#/components/parameters/Building"
+      responses:
+        "200":
+          description: Monthly campus consumption
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampusBills"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/campus/hourly-heatmap:
+    get:
+      tags: [Campus]
+      operationId: getCampusHourlyHeatmap
+      summary: Reserved hourly heatmap contract
+      description: Returns unavailable until a reliable hourly upstream source exists.
+      security: []
+      responses:
+        "200":
+          description: Explicitly unavailable capability
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnavailableCapability"
+              examples:
+                unavailable:
+                  value:
+                    availability: unavailable
+                    reason_code: upstream_hourly_data_unavailable
+                    message: Reliable hourly electricity data is not available from the upstream source.
+                    quality:
+                      eligible: 0
+                      covered: 0
+                      coverage_ratio: 0
+                      stale: 0
+                      anomalies: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/admin/mail/test:
+    post:
+      tags: [Mail]
+      operationId: sendTestMail
+      summary: Send one test email through the configured provider
+      description: >
+        With no template this sends a plain connectivity check. With a template it renders that
+        product template with sample data, so operators can verify layout and placeholders
+        without waiting for a real push.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipient]
+              properties:
+                recipient:
+                  type: string
+                  format: email
+                template:
+                  type: string
+                  enum: ["", balance_alert, usage_summary, verification_code, password_reset, push_test, meter_unbound, account_disabled, account_deleted]
+                  default: ""
+      responses:
+        "202":
+          description: Delivery accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MailDelivery"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: Configured mail provider rejected or failed the delivery
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/admin/frontend-config:
+    put:
+      tags: [Frontend]
+      operationId: updateFrontendConfig
+      summary: Replace product feature flags and record an audit version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FrontendConfigUpdate"
+      responses:
+        "200":
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FrontendConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  # ---- Web 管理面板 -------------------------------------------------------
+  # 这些端点接受两种凭证：具备 operator/admin 角色的用户 access JWT（人），
+  # 或 ADMIN_TOKEN（机器）。角色每次请求现查库，降权立刻生效。
+  # 401 = 没表明身份；403 = 表明了但级别不够。
+
+  /api/v1/admin/session:
+    get:
+      tags: [Admin]
+      operationId: getAdminSession
+      summary: Who am I, and what can this deployment do
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current actor and panel capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/audit:
+    get:
+      tags: [Admin]
+      operationId: listAdminAudit
+      summary: Recent panel writes
+      description: Credential changes record which fields changed, never their values.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Audit entries, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/users:
+    get:
+      tags: [Admin]
+      operationId: listAdminUsers
+      summary: Account list for the panel
+      description: The q parameter matches email, nickname and meter number at once.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: role
+          in: query
+          schema: { type: string, enum: [user, operator, admin] }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, disabled] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminUser"
+                  total:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/users/promote:
+    post:
+      tags: [Admin]
+      operationId: promoteAdminUser
+      summary: Bootstrap the first administrator
+      description: >
+        Accepts only ADMIN_TOKEN. With no admin in the database the session channel cannot get
+        in, so there has to be some way to create the first one. Afterwards use PATCH
+        /api/v1/admin/users/{user_id}.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: Must already be a registered account.
+                role:
+                  type: string
+                  enum: [user, operator, admin]
+                  default: admin
+      responses:
+        "200":
+          description: Updated account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUser"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/users/{user_id}:
+    patch:
+      tags: [Admin]
+      operationId: updateAdminUser
+      summary: Change a role or enable/disable an account
+      description: >
+        Requires admin, because whoever can grant access is effectively an administrator.
+        Disabling also revokes that account's sessions. Demoting or disabling the last active
+        admin is rejected, as is changing your own role or status.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                  enum: [user, operator, admin]
+                status:
+                  type: string
+                  enum: [active, disabled]
+      responses:
+        "200":
+          description: Updated account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUser"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Would lock everyone out (last_admin) or lock yourself out (self_lockout)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [Admin]
+      operationId: deleteAdminUser
+      summary: Permanently delete an account
+      description: >
+        Requires admin. Deletes account-owned bindings, sessions, notification settings,
+        channel credentials and push logs through cascading foreign keys. Meter readings,
+        official daily usage and bills remain intact. Deleting yourself or the last active
+        administrator is rejected.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Account deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Would delete the caller or the last active administrator
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/users/{user_id}/meter:
+    delete:
+      tags: [Admin]
+      operationId: unbindAdminUserMeter
+      summary: Clear an account's active meter binding
+      description: >
+        Requires admin. This only closes the current user-meter binding. Historical meter
+        readings, official daily usage and bills are retained.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Binding cleared, including when it was already empty
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/users/{user_id}/sessions/revoke:
+    post:
+      tags: [Admin]
+      operationId: revokeAdminUserSessions
+      summary: Sign an account out everywhere
+      description: Gentler than disabling, because the user can simply sign in again.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Number of revoked sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/settings/school:
+    get:
+      tags: [Admin]
+      operationId: getSchoolSettings
+      summary: Which school the collectors target
+      description: >
+        Lists every registered upstream provider with the schools it is known to support,
+        plus the binding currently in effect. `configured: false` means no school has been
+        selected: the service runs normally but every collector skips its runs.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Available providers and the active binding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchoolSettingsView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [Admin]
+      operationId: putSchoolSettings
+      summary: Select the school the collectors target
+      description: >
+        Takes effect within about 15 seconds without a restart. A run already in progress keeps
+        the querier it started with, so a single run never mixes two schools. An empty `area_id`
+        is a valid request: it stops collection until a school is selected again. An `area_id`
+        outside the provider's tested list is accepted, because that list is a test result rather
+        than an allow list.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchoolBinding"
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchoolSettingsView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/admin/settings/scanner:
+    get:
+      tags: [Admin]
+      operationId: getScannerSettings
+      summary: Scanner schedule and throttle
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current settings, their source, and the server-side ceilings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScannerSettingsView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [Admin]
+      operationId: putScannerSettings
+      summary: Update the scanner schedule and throttle
+      description: >
+        Each scanner keeps its environment-defined safety ceiling. Balance, bill, and daily-detail
+        runs may overlap, while every outbound request also shares the environment-defined global
+        QPS and concurrency gate.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScannerSettings"
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScannerSettingsView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/settings/mail:
+    get:
+      tags: [Admin]
+      operationId: getMailSettings
+      summary: Mail provider configuration
+      description: >
+        Plaintext fields come back as-is; credentials come back only as a masked value plus a
+        boolean saying whether they are set. Requires admin.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Effective configuration and what is still missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MailSettingsView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [Admin]
+      operationId: putMailSettings
+      summary: Save mail provider configuration; takes effect on the next send
+      description: >
+        Credentials are three-state: an omitted field keeps the stored value, an explicit null
+        clears it (falling back to environment variables), and a string stores a new value.
+        Values that still contain the mask are ignored, so a panel can render the masked string
+        straight into the input without risking storing it back.
+        Returns 412 when SETTINGS_ENCRYPTION_KEY is absent, because refusing beats silently
+        storing an API key in plaintext.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              properties:
+                settings:
+                  $ref: "#/components/schemas/MailSettings"
+                secrets:
+                  type: object
+                  additionalProperties:
+                    type: [string, "null"]
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MailSettingsView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          description: Server has no SETTINGS_ENCRYPTION_KEY, so credentials cannot be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/settings/mail/test:
+    post:
+      tags: [Admin]
+      operationId: testMailSettings
+      summary: Send one real email with the saved configuration
+      description: >
+        Uses the configuration already saved on the server, not an unsubmitted draft, so save
+        before testing. A delivery failure returns 200 with ok=false: that is a report of an
+        attempt, not a server fault.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, format: email }
+      responses:
+        "200":
+          description: Attempt result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+                  error: { type: string }
+                  delivery:
+                    $ref: "#/components/schemas/MailDelivery"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/admin/settings/oauth:
+    get:
+      tags: [Admin]
+      operationId: getOAuthSettings
+      summary: Get the effective third-party login credentials and their redirect URIs
+      description: >
+        Client secrets are returned masked, never in clear. `settings` holds the values in
+        force after merging the panel record over the environment fallback, so the panel can
+        render exactly what is running. `redirect_uris` is computed server-side because
+        mistyping that line in the provider console is the most common failure of this setup.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Effective configuration with masked secret state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthSettingsView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [Admin]
+      operationId: putOAuthSettings
+      summary: Save third-party login credentials
+      description: >
+        Secret fields are three-state: omit to keep the stored value, send null or an empty
+        string to clear it back to the environment fallback, or send a new string to replace
+        it. A masked value round-tripped unchanged is ignored. Takes effect without a restart.
+        Storing credentials requires SETTINGS_ENCRYPTION_KEY (HTTP 412 otherwise). A provider
+        configured with only one half of its credential pair is rejected with HTTP 400
+        `oauth_not_configured`, since the symptom would otherwise be a silently missing button.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              additionalProperties: false
+              properties:
+                settings:
+                  $ref: "#/components/schemas/OAuthSettings"
+                secrets:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    google_client_secret: { type: [string, "null"] }
+                    github_client_secret: { type: [string, "null"] }
+      responses:
+        "200":
+          description: Saved configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthSettingsView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          description: SETTINGS_ENCRYPTION_KEY is not configured, so credentials cannot be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/settings/captcha:
+    get:
+      tags: [Admin]
+      operationId: getCaptchaSettings
+      summary: Get the effective human-verification provider and protected actions
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Effective configuration with masked secret state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptchaSettingsView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [Admin]
+      operationId: putCaptchaSettings
+      summary: Save the provider and action-level human-verification policy
+      description: >
+        Secret fields are three-state: omit to keep the stored value, send null or an empty
+        string to clear it, or send a new string to replace it. Provider changes take effect
+        without restarting the API. Stored credentials require SETTINGS_ENCRYPTION_KEY.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [settings]
+              additionalProperties: false
+              properties:
+                settings:
+                  $ref: "#/components/schemas/CaptchaSettings"
+                secrets:
+                  type: object
+                  properties:
+                    turnstile_secret: { type: [string, "null"] }
+                  additionalProperties: false
+      responses:
+        "200":
+          description: Saved configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptchaSettingsView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          description: Server has no SETTINGS_ENCRYPTION_KEY, so credentials cannot be stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/settings/captcha/test:
+    post:
+      tags: [Admin]
+      operationId: testCaptchaSettings
+      summary: Probe the currently saved human-verification provider
+      description: Turnstile accepts a fresh widget token and verifies it through Siteverify.
+      security: [{ userAccessToken: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                token:
+                  type: string
+                  description: Fresh Turnstile token.
+      responses:
+        "200":
+          description: Provider reachability and verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptchaProbeResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/me/sessions/revoke:
+    post:
+      tags: [Auth]
+      operationId: revokeCurrentUserSessions
+      summary: Sign out of every device, without changing the password
+      description: >
+        The most direct thing a user can do when they suspect someone else is signed in as them.
+        Revokes this device too, so the client should return to the signed-out state.
+      security: [{ userAccessToken: [] }]
+      responses:
+        "200":
+          description: Number of revoked sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Internal administrator token from ADMIN_TOKEN.
+    userAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived product-user access JWT.
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: edu_power_refresh
+      description: Long-lived rotating refresh JWT stored as an HttpOnly SameSite cookie.
+
+  parameters:
+    CaptchaToken:
+      name: X-Captcha-Token
+      in: header
+      required: false
+      description: Fresh Turnstile token for a protected action.
+      schema:
+        type: string
+    OAuthProvider:
+      name: provider
+      in: path
+      required: true
+      description: Third-party login provider.
+      schema:
+        type: string
+        enum: [google, github]
+    RunID:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Meter:
+      name: meter
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    ChannelId:
+      name: channel
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [mail, sms, dingtalk, wecom, wecom_webhook, feishu, lark, discord, webhook, bark, gotify, whatsapp, pushplus, serverchan_turbo, serverchan3, mp, qq, napcat, telegram]
+    From:
+      name: from
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    Granularity:
+      name: granularity
+      in: query
+      required: true
+      schema:
+        type: string
+        enum: [day, week, month]
+    Building:
+      name: building
+      in: query
+      schema:
+        type: string
+    Floor:
+      name: floor
+      in: query
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid administrator token, access JWT, or refresh JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: The authenticated operation is disabled by product policy
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    CaptchaRequired:
+      description: Human verification is required or the supplied proof is invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: A required dependency is not ready
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Request rate or resource-specific cooldown exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    CaptchaProvider:
+      type: string
+      enum: [disabled, turnstile]
+
+    CaptchaAction:
+      type: string
+      enum: [auth.login, auth.register_code, auth.password_reset_code, meter.preview]
+
+    CaptchaSettings:
+      type: object
+      additionalProperties: false
+      required: [provider, site_key, hostname, actions]
+      properties:
+        provider:
+          $ref: "#/components/schemas/CaptchaProvider"
+        site_key:
+          type: string
+          description: Public Turnstile widget key; unused when verification is disabled.
+        hostname:
+          type: string
+          description: Optional hostname required in a successful Turnstile verification response.
+        actions:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/CaptchaAction"
+
+    CaptchaPublicConfig:
+      type: object
+      additionalProperties: false
+      required: [provider, site_key, actions]
+      properties:
+        provider:
+          $ref: "#/components/schemas/CaptchaProvider"
+        site_key: { type: string }
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/CaptchaAction"
+
+    OAuthSettings:
+      type: object
+      additionalProperties: false
+      description: >
+        Plaintext half of the third-party login configuration. Client secrets are not part of
+        it; they are written through the separate three-state `secrets` object and only ever
+        read back masked. An empty field falls back to the matching environment variable.
+      properties:
+        base_url:
+          type: string
+          description: Site origin the redirect URI is built from; no path, no trailing slash.
+          maxLength: 255
+        google_client_id: { type: string, maxLength: 255 }
+        github_client_id: { type: string, maxLength: 255 }
+
+    OAuthSettingsView:
+      type: object
+      required:
+        [settings, source, redirect_uris, configured, missing, secret_set, secret_masked,
+         secrets_writable, secrets_unreadable, env_base_url, updated_at, updated_by]
+      properties:
+        settings:
+          $ref: "#/components/schemas/OAuthSettings"
+        source: { type: string, enum: [env, panel] }
+        redirect_uris:
+          type: object
+          description: Exact callback URL to register with each provider; empty when no base URL is set.
+          additionalProperties: { type: string }
+        configured:
+          type: object
+          additionalProperties: { type: boolean }
+        missing:
+          type: object
+          description: Per provider, which of base_url / client id / client secret is still absent.
+          additionalProperties:
+            type: array
+            items: { type: string }
+        secret_set:
+          type: object
+          additionalProperties: { type: boolean }
+        secret_masked:
+          type: object
+          additionalProperties: { type: string }
+        secrets_writable: { type: boolean }
+        secrets_unreadable: { type: boolean }
+        env_base_url:
+          type: string
+          description: Environment fallback for base_url, shown so the panel can say where an empty field lands.
+        updated_at: { type: [string, "null"], format: date-time }
+        updated_by: { type: string }
+
+    CaptchaSettingsView:
+      type: object
+      required:
+        [settings, source, providers, protected_actions, secret_set, secret_masked,
+         secrets_writable, secrets_unreadable, missing, ready, updated_at, updated_by]
+      properties:
+        settings:
+          $ref: "#/components/schemas/CaptchaSettings"
+        source: { type: string, enum: [env, panel] }
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/CaptchaProvider"
+        protected_actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/CaptchaAction"
+        secret_set:
+          type: object
+          additionalProperties: { type: boolean }
+        secret_masked:
+          type: object
+          additionalProperties: { type: string }
+        secrets_writable: { type: boolean }
+        secrets_unreadable: { type: boolean }
+        missing:
+          type: array
+          items: { type: string }
+        ready: { type: boolean }
+        updated_at: { type: [string, "null"], format: date-time }
+        updated_by: { type: string }
+
+    CaptchaProbeResult:
+      type: object
+      required: [provider, available, passed]
+      properties:
+        provider:
+          $ref: "#/components/schemas/CaptchaProvider"
+        available: { type: boolean }
+        passed: { type: boolean }
+
+    FrontendAuthFeatures:
+      type: object
+      additionalProperties: false
+      required: [email_login, sms_login, email_code, sms_code, registration]
+      properties:
+        email_login:
+          type: boolean
+        sms_login:
+          type: boolean
+        email_code:
+          type: boolean
+        sms_code:
+          type: boolean
+        registration:
+          type: boolean
+        google_oauth:
+          type: boolean
+          description: >
+            Whether the "sign in with Google" entry is shown. Whether it *works* is a
+            separate, server-side fact reported read-only in `oauth`.
+        github_oauth:
+          type: boolean
+          description: Whether the "sign in with GitHub" entry is shown.
+
+    FrontendFeatures:
+      type: object
+      additionalProperties: false
+      required: [auth, channels]
+      properties:
+        auth:
+          $ref: "#/components/schemas/FrontendAuthFeatures"
+        channels:
+          type: object
+          description: Per-channel user-interface visibility; false hides the channel and disables existing delivery.
+          additionalProperties:
+            type: boolean
+        channel_coming_soon:
+          type: object
+          description: Per-channel Coming Soon state; true keeps the row visible but disables configuration and existing delivery.
+          additionalProperties:
+            type: boolean
+        channel_order:
+          type: array
+          description: User-facing channel order. Missing known channels are appended automatically.
+          uniqueItems: true
+          items:
+            type: string
+            enum: [mail, sms, dingtalk, wecom, wecom_webhook, feishu, lark, discord, webhook, bark, gotify, whatsapp, pushplus, serverchan_turbo, serverchan3, mp, qq, napcat, telegram]
+        channel_categories:
+          type: array
+          description: >-
+            User-facing channel groups, rendered in this order. Each channel may belong to at most
+            one category; channels left out of every category are shown in a trailing "other" group.
+            Order inside a group still comes from channel_order.
+          maxItems: 12
+          items:
+            $ref: "#/components/schemas/FrontendChannelCategory"
+
+    FrontendChannelCategory:
+      type: object
+      additionalProperties: false
+      required: [id, name, en, channels]
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,31}$"
+          description: 配置里的稳定键；改标题不影响成员关系。
+          examples: ["essentials"]
+        name:
+          type: string
+          minLength: 1
+          maxLength: 40
+          examples: ["开箱即用"]
+        en:
+          type: string
+          maxLength: 40
+          description: 分组标题上方的等宽小标签。
+          examples: ["READY TO USE"]
+        desc:
+          type: string
+          maxLength: 160
+          description: 一句话说明这一类渠道需要用户做什么。
+        channels:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [mail, sms, dingtalk, wecom, wecom_webhook, feishu, lark, discord, webhook, bark, gotify, whatsapp, pushplus, serverchan_turbo, serverchan3, mp, qq, napcat, telegram]
+
+    FrontendSemester:
+      type: object
+      additionalProperties: false
+      required: [key, start, end]
+      properties:
+        key:
+          type: string
+          pattern: "^[0-9]{4}-(?:0[1-9]|1[0-2])$"
+          description: 开学的年月；用户端显示为「2026-03学期」。
+          examples: ["2026-03"]
+        start:
+          type: string
+          format: date
+          description: 第 1 周的第一天（本地日期）。必须落在 key 所指的那个月里。
+        end:
+          type: string
+          format: date
+          description: 学期最后一天（含）。start 到 end 至少 7 天、至多 300 天。
+
+    FrontendDisplay:
+      type: object
+      additionalProperties: false
+      required: [campus_name]
+      properties:
+        electricity_rate:
+          type: string
+          pattern: "^[0-9]+(?:\\.[0-9]{1,4})?$"
+        empty_room_threshold_kwh:
+          type: string
+          pattern: "^[0-9]+(?:\\.[0-9]{1,4})?$"
+          default: "0.3"
+          description: >
+            每个自然日都用该日官方用量（ydl）独立判定；低于该值时仅该日视为空房。空房不计入户均除数，
+            也不参与省电榜；总用电量及其他榜单仍保留。允许范围为 (0, 10] kWh。
+        ranking_refresh_time:
+          type: string
+          pattern: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+          default: "09:00"
+          description: 日榜每日、周榜周一、月榜每月 1 日切换到上一完整周期的 APP_TIMEZONE 本地时刻。
+        campus_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        area_name:
+          type: string
+          maxLength: 120
+          description: >
+            School name shown in the sidebar and page title. May be empty: a
+            multi-school deployment does not necessarily want one school's name
+            in its header.
+        brand_name:
+          type: string
+          maxLength: 120
+          default: POWER·PUSH
+          description: >
+            Site name used in the sidebar, the tab title, and every outgoing mail.
+            Kept separate from `area_name` because "which school" and "what this
+            site is called" are not the same thing.
+        semesters:
+          type: array
+          maxItems: 40
+          description: |
+            Academic calendar driving the client's "semester" chart: the x axis is
+            week 1 … week N, where N is how many 7-day blocks fit between `start`
+            and `end`. Entries must not overlap and each `key` must be the calendar
+            month its `start` falls in. An empty list makes clients fall back to a
+            rolling 18-week window.
+          items:
+            $ref: "#/components/schemas/FrontendSemester"
+
+    FrontendConfigUpdate:
+      type: object
+      additionalProperties: false
+      required: [features, display]
+      properties:
+        features:
+          $ref: "#/components/schemas/FrontendFeatures"
+        display:
+          $ref: "#/components/schemas/FrontendDisplay"
+
+    FrontendConfig:
+      type: object
+      additionalProperties: false
+      required: [version, features, display, updated_at]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        features:
+          $ref: "#/components/schemas/FrontendFeatures"
+        display:
+          $ref: "#/components/schemas/FrontendDisplay"
+        oauth:
+          $ref: "#/components/schemas/FrontendOAuthAvailability"
+        updated_at:
+          type: string
+          format: date-time
+
+    FrontendOAuthAvailability:
+      type: object
+      additionalProperties: false
+      description: >
+        Read-only server capability: whether OAuth client credentials are configured for
+        each provider. Derived from the environment, not stored, and ignored on write. The
+        login page shows a button only when the panel switch and this are both true.
+      required: [google, github]
+      properties:
+        google:
+          type: boolean
+        github:
+          type: boolean
+
+    RegisterRequest:
+      type: object
+      required: [email, password, code]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+        code:
+          type: string
+          pattern: "^[0-9]{6}$"
+        nickname:
+          type: string
+          maxLength: 80
+        meter:
+          type: string
+          pattern: "^[0-9]{6,32}$"
+          deprecated: true
+          description: >
+            Optional and deprecated. Registration creates the account only; the product
+            frontend binds a meter after login through PUT /api/v1/me/meter, so an anonymous
+            visitor can no longer turn a meter number into a dormitory address.
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, user]
+      properties:
+        access_token:
+          type: string
+          description: Short-lived JWT; keep it in memory and send it as a Bearer token.
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          description: Access-token lifetime in seconds.
+          minimum: 60
+        user:
+          $ref: "#/components/schemas/User"
+
+    User:
+      type: object
+      required: [id, email, nickname, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        nickname:
+          type: string
+        status:
+          type: string
+          enum: [active, disabled]
+        created_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type: [string, "null"]
+          format: date-time
+        has_password:
+          type: boolean
+          description: >
+            False for accounts created through third-party login that have not set a
+            password yet. Changing the password, changing the email and deleting the
+            account all require one, and reply 409 `password_not_set` until it exists;
+            password recovery sets the first one.
+        oauth_providers:
+          type: array
+          description: Third-party identities linked to this account.
+          items:
+            type: string
+            enum: [google, github]
+        meter:
+          oneOf:
+            - $ref: "#/components/schemas/UserMeter"
+            - type: "null"
+
+    UserMeter:
+      type: object
+      required: [meter, campus, building, floor, room]
+      properties:
+        meter:
+          type: string
+        campus:
+          type: string
+        building:
+          type: string
+        floor:
+          type: string
+        room:
+          type: string
+
+    MeterPreview:
+      type: object
+      required: [meter, campus, building, floor, room, claimable]
+      additionalProperties: false
+      properties:
+        meter:
+          type: string
+        campus:
+          type: string
+        building:
+          type: string
+        floor:
+          type: string
+        room:
+          type: string
+        claimable:
+          type: boolean
+        reason:
+          type: [string, "null"]
+          enum: [already_bound, excluded, unsupported_building, null]
+
+    CampusScopes:
+      type: object
+      required: [updated_at, campuses]
+      properties:
+        updated_at:
+          type: string
+          format: date-time
+        campuses:
+          type: array
+          items:
+            type: object
+            required: [name, buildings]
+            properties:
+              name:
+                type: string
+              buildings:
+                type: array
+                items:
+                  type: object
+                  required: [name, floors, room_count]
+                  properties:
+                    name:
+                      type: string
+                    floors:
+                      type: array
+                      items:
+                        type: string
+                    room_count:
+                      type: integer
+                      minimum: 0
+
+    Decimal:
+      type: string
+      pattern: "^-?[0-9]+(\\.[0-9]+)?$"
+      examples: ["43.87"]
+
+    Availability:
+      type: string
+      enum: [ready, partial, insufficient_history, unavailable]
+
+    Quality:
+      type: object
+      required: [eligible, covered, coverage_ratio, stale, anomalies]
+      properties:
+        eligible:
+          type: integer
+          minimum: 0
+        covered:
+          type: integer
+          minimum: 0
+        coverage_ratio:
+          type: number
+          minimum: 0
+          maximum: 1
+        stale:
+          type: integer
+          minimum: 0
+        anomalies:
+          type: integer
+          minimum: 0
+
+    Error:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+        provider:
+          $ref: "#/components/schemas/CaptchaProvider"
+        challenge_url:
+          type: string
+          format: uri-reference
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/Error"
+
+    Health:
+      type: object
+      required: [status, version, time]
+      properties:
+        status:
+          type: string
+          const: ok
+        version:
+          type: string
+          const: version_1
+        time:
+          type: string
+          format: date-time
+
+    Readiness:
+      type: object
+      required: [status, version, database, migrations, worker]
+      properties:
+        status:
+          type: string
+          enum: [ready, degraded]
+        version:
+          type: string
+          const: version_1
+        database:
+          type: string
+          enum: [ready, unavailable]
+        migrations:
+          type: string
+          enum: [ready, missing, unknown]
+        worker:
+          type: string
+          enum: [ready, stale, unavailable]
+
+    ScanRunStatus:
+      type: string
+      enum: [pending, running, completed, completed_with_errors, interrupted, canceled, failed]
+
+    ScanResultStatus:
+      type: string
+      enum: [valid, stale, empty, error, parse_error, canceled]
+
+    ScanCounters:
+      type: object
+      required:
+        [inventory_total, excluded_total, eligible_total, processed_total, valid_total,
+         stale_total, empty_total, error_total, parse_error_total, duplicate_reading_total]
+      properties:
+        inventory_total:
+          type: integer
+        excluded_total:
+          type: integer
+        eligible_total:
+          type: integer
+        processed_total:
+          type: integer
+        valid_total:
+          type: integer
+        stale_total:
+          type: integer
+        empty_total:
+          type: integer
+        error_total:
+          type: integer
+        parse_error_total:
+          type: integer
+        duplicate_reading_total:
+          type: integer
+
+    ScanRun:
+      type: object
+      required: [id, trigger, status, started_at, bound_only, counters]
+      properties:
+        id:
+          type: string
+          format: uuid
+        parent_run_id:
+          type: [string, "null"]
+          format: uuid
+        trigger:
+          type: string
+          enum: [manual, schedule, retry, recovery]
+        status:
+          $ref: "#/components/schemas/ScanRunStatus"
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+        heartbeat_at:
+          type: [string, "null"]
+          format: date-time
+        qps:
+          type: number
+        concurrency:
+          type: integer
+        limit:
+          type: [integer, "null"]
+        bound_only:
+          type: boolean
+          description: True for the hourly priority scan of meters bound to active users.
+        counters:
+          $ref: "#/components/schemas/ScanCounters"
+
+    ScanRunPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanRun"
+        next_cursor:
+          type: [string, "null"]
+
+    CreateScanRunRequest:
+      type: object
+      properties:
+        limit:
+          type: [integer, "null"]
+          minimum: 1
+        full:
+          type: boolean
+          default: false
+          description: Must be explicitly true for an unbounded full-inventory scan.
+        building:
+          type: [string, "null"]
+        floor:
+          type: [string, "null"]
+        qps:
+          type: [number, "null"]
+          minimum: 0.01
+          maximum: 10
+        concurrency:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 16
+        dry_run:
+          type: boolean
+          default: false
+
+    ScanDryRun:
+      type: object
+      required: [dry_run, counters, qps, concurrency]
+      properties:
+        dry_run:
+          type: boolean
+          const: true
+        counters:
+          $ref: "#/components/schemas/ScanCounters"
+        qps:
+          type: number
+        concurrency:
+          type: integer
+
+    BillResultStatus:
+      type: string
+      enum: [valid, partial, no_data, empty, error, canceled]
+
+    BillCounters:
+      type: object
+      required:
+        [inventory_total, excluded_total, eligible_total, processed_total, valid_total,
+         partial_total, no_data_total, empty_total, error_total, month_data_total,
+         month_no_data_total, month_partial_total, month_error_total,
+         canonical_saved_total, changed_total]
+      properties:
+        inventory_total: {type: integer}
+        excluded_total: {type: integer}
+        eligible_total: {type: integer}
+        processed_total: {type: integer}
+        valid_total: {type: integer}
+        partial_total: {type: integer}
+        no_data_total: {type: integer}
+        empty_total: {type: integer}
+        error_total: {type: integer}
+        month_data_total: {type: integer}
+        month_no_data_total: {type: integer}
+        month_partial_total: {type: integer}
+        month_error_total: {type: integer}
+        canonical_saved_total: {type: integer}
+        changed_total:
+          type: integer
+          description: Existing canonical month rows whose values changed during reconciliation.
+
+    BillRun:
+      type: object
+      required: [id, trigger, status, mode, months, started_at, qps, concurrency, counters]
+      properties:
+        id:
+          type: string
+          format: uuid
+        parent_run_id:
+          type: [string, "null"]
+          format: uuid
+        trigger:
+          type: string
+          enum: [manual, schedule, retry, recovery]
+        status:
+          $ref: "#/components/schemas/ScanRunStatus"
+        mode:
+          type: string
+          const: visible_months
+        months:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            pattern: ^[0-9]{4}-(0[1-9]|1[0-2])$
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: [string, "null"]
+          format: date-time
+        heartbeat_at:
+          type: [string, "null"]
+          format: date-time
+        qps:
+          type: number
+        concurrency:
+          type: integer
+        limit:
+          type: [integer, "null"]
+        counters:
+          $ref: "#/components/schemas/BillCounters"
+        error_message:
+          type: [string, "null"]
+
+    BillRunPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BillRun"
+        next_cursor:
+          type: [string, "null"]
+
+    CreateBillRunRequest:
+      type: object
+      properties:
+        limit:
+          type: [integer, "null"]
+          minimum: 1
+        full:
+          type: boolean
+          default: false
+          description: Must be explicitly true for an unbounded full-inventory run.
+        building:
+          type: [string, "null"]
+        floor:
+          type: [string, "null"]
+        qps:
+          type: [number, "null"]
+          minimum: 0.01
+          maximum: 30
+          description: Global limit across every upstream HTTP request, not meters per second.
+        concurrency:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 8
+        dry_run:
+          type: boolean
+          default: false
+
+    RetryBillRunRequest:
+      type: object
+      required: [statuses]
+      properties:
+        statuses:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [partial, empty, error, canceled]
+        qps:
+          type: [number, "null"]
+          minimum: 0.01
+          maximum: 30
+          description: Global upstream request rate for the retry child run.
+        concurrency:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 8
+
+    BillDryRun:
+      type: object
+      required: [dry_run, counters, months, month_requests, request_floor, qps, concurrency]
+      properties:
+        dry_run:
+          type: boolean
+          const: true
+        counters:
+          $ref: "#/components/schemas/BillCounters"
+        months:
+          type: array
+          items:
+            type: string
+        request_floor:
+          type: integer
+          description: Minimum expected calls (four session calls plus one call per month per meter), before retries.
+        month_requests:
+          type: integer
+          description: Number of per-month POST requests before retries.
+        qps:
+          type: number
+        concurrency:
+          type: integer
+
+    BillResult:
+      type: object
+      required:
+        [run_id, meter, building, floor, room, status, attempts, duration_ms,
+         queried_at, months_requested, months_with_data, months_no_data,
+         months_partial, months_error, canonical_saved, changed_count]
+      properties:
+        run_id: {type: string, format: uuid}
+        meter: {type: string}
+        building: {type: string}
+        floor: {type: string}
+        room: {type: string}
+        status:
+          $ref: "#/components/schemas/BillResultStatus"
+        attempts: {type: integer}
+        duration_ms: {type: integer}
+        queried_at: {type: string, format: date-time}
+        months_requested: {type: integer}
+        months_with_data: {type: integer}
+        months_no_data: {type: integer}
+        months_partial: {type: integer}
+        months_error: {type: integer}
+        canonical_saved: {type: integer}
+        changed_count: {type: integer}
+        error_code: {type: [string, "null"]}
+        error_message: {type: [string, "null"]}
+
+    BillResultPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BillResult"
+        next_cursor:
+          type: [string, "null"]
+
+    DailyDetailCounters:
+      type: object
+      required: [inventory_total, excluded_total, eligible_total, processed_total, valid_total, no_data_total, partial_total, empty_total, error_total, days_saved_total, changed_total]
+      properties:
+        inventory_total: {type: integer}
+        excluded_total: {type: integer}
+        eligible_total: {type: integer}
+        processed_total: {type: integer}
+        valid_total: {type: integer}
+        no_data_total: {type: integer}
+        partial_total: {type: integer}
+        empty_total: {type: integer}
+        error_total: {type: integer}
+        days_saved_total: {type: integer}
+        changed_total: {type: integer}
+
+    DailyDetailRun:
+      type: object
+      required: [id, trigger, status, months, started_at, qps, concurrency, initialization, counters]
+      properties:
+        id: {type: string, format: uuid}
+        parent_run_id: {type: [string, "null"], format: uuid}
+        trigger:
+          type: string
+          enum: [manual, schedule, retry, recovery, import]
+        status:
+          $ref: "#/components/schemas/ScanRunStatus"
+        months:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            pattern: ^[0-9]{4}-(0[1-9]|1[0-2])$
+        started_at: {type: string, format: date-time}
+        finished_at: {type: [string, "null"], format: date-time}
+        heartbeat_at: {type: [string, "null"], format: date-time}
+        qps: {type: number}
+        concurrency: {type: integer}
+        limit: {type: [integer, "null"]}
+        initialization: {type: boolean}
+        counters:
+          $ref: "#/components/schemas/DailyDetailCounters"
+        error_message: {type: [string, "null"]}
+
+    DailyDetailRunPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DailyDetailRun"
+        next_cursor: {type: [string, "null"]}
+
+    CreateDailyDetailRunRequest:
+      type: object
+      properties:
+        limit: {type: [integer, "null"], minimum: 1}
+        full:
+          type: boolean
+          default: false
+          description: Must be explicitly true for an unbounded full-inventory run.
+        building: {type: [string, "null"]}
+        floor: {type: [string, "null"]}
+        qps: {type: [number, "null"], minimum: 0.01, maximum: 30}
+        concurrency: {type: [integer, "null"], minimum: 1, maximum: 8}
+        initialization:
+          type: boolean
+          default: false
+          description: Backfill from the configured bootstrap month instead of collecting only incremental months.
+        dry_run: {type: boolean, default: false}
+
+    RetryDailyDetailRunRequest:
+      type: object
+      required: [statuses]
+      properties:
+        statuses:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [partial, empty, error, canceled]
+        qps: {type: [number, "null"], minimum: 0.01, maximum: 30}
+        concurrency: {type: [integer, "null"], minimum: 1, maximum: 8}
+
+    DailyDetailResult:
+      type: object
+      required: [run_id, meter, building, floor, room, status, attempts, duration_ms, queried_at, months_requested, months_valid, months_no_data, months_error, days_saved, changed_count]
+      properties:
+        run_id: {type: string, format: uuid}
+        meter: {type: string}
+        building: {type: string}
+        floor: {type: string}
+        room: {type: string}
+        status:
+          type: string
+          enum: [valid, no_data, partial, empty, error, canceled]
+        attempts: {type: integer}
+        duration_ms: {type: integer}
+        queried_at: {type: string, format: date-time}
+        months_requested: {type: integer}
+        months_valid: {type: integer}
+        months_no_data: {type: integer}
+        months_error: {type: integer}
+        days_saved: {type: integer}
+        changed_count: {type: integer}
+        error_code: {type: [string, "null"]}
+        error_message: {type: [string, "null"]}
+
+    DailyDetailResultPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DailyDetailResult"
+        next_cursor: {type: [string, "null"]}
+
+    BillRevision:
+      type: object
+      required:
+        [id, run_id, meter, month, previous_values, current_values, detected_at, acknowledged]
+      properties:
+        id: {type: string, format: uuid}
+        run_id: {type: string, format: uuid}
+        meter: {type: string}
+        month:
+          type: string
+          pattern: ^[0-9]{4}-(0[1-9]|1[0-2])$
+        previous_values:
+          type: object
+          additionalProperties: true
+        current_values:
+          type: object
+          additionalProperties: true
+        detected_at: {type: string, format: date-time}
+        acknowledged: {type: boolean}
+        acknowledged_at: {type: [string, "null"], format: date-time}
+        acknowledged_note: {type: [string, "null"]}
+
+    BillRevisionPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BillRevision"
+        next_cursor:
+          type: [string, "null"]
+
+    RetryScanRunRequest:
+      type: object
+      required: [statuses]
+      properties:
+        statuses:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/ScanResultStatus"
+
+    ScanResult:
+      type: object
+      required: [run_id, meter, status, attempts, duration_ms, queried_at]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        meter:
+          type: string
+        building:
+          type: string
+        floor:
+          type: string
+        room:
+          type: string
+        status:
+          $ref: "#/components/schemas/ScanResultStatus"
+        attempts:
+          type: integer
+        duration_ms:
+          type: integer
+        queried_at:
+          type: string
+          format: date-time
+        reading_id:
+          type: [string, "null"]
+          format: uuid
+        reading_time:
+          type: [string, "null"]
+          format: date-time
+        error_code:
+          type: [string, "null"]
+        error_message:
+          type: [string, "null"]
+
+    ScanResultPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanResult"
+        next_cursor:
+          type: [string, "null"]
+
+    AnomalyType:
+      type: string
+      enum:
+        [negative_reset, same_timestamp_conflict, stale_reading, parse_drift,
+         implausible_delta, time_regression]
+
+    Anomaly:
+      type: object
+      required: [id, type, severity, detected_at, acknowledged]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          $ref: "#/components/schemas/AnomalyType"
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        meter:
+          type: [string, "null"]
+        scan_run_id:
+          type: [string, "null"]
+          format: uuid
+        detected_at:
+          type: string
+          format: date-time
+        acknowledged:
+          type: boolean
+        acknowledged_at:
+          type: [string, "null"]
+          format: date-time
+        note:
+          type: [string, "null"]
+        details:
+          type: object
+          additionalProperties: true
+
+    AnomalyPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Anomaly"
+        next_cursor:
+          type: [string, "null"]
+
+    AdminOverview:
+      type: object
+      required:
+        [inventory, latest_run, latest_bill_run, unacknowledged_anomalies,
+         unacknowledged_critical_anomalies, unacknowledged_bill_revisions, version, database, migrations,
+         worker, worker_heartbeat_at, last_aggregate_at, mail_provider,
+         mail_configured, scan_schedule, bill_schedule, detail_schedule]
+      properties:
+        inventory:
+          $ref: "#/components/schemas/ScanCounters"
+        latest_run:
+          oneOf:
+            - $ref: "#/components/schemas/ScanRun"
+            - type: "null"
+        latest_bill_run:
+          oneOf:
+            - $ref: "#/components/schemas/BillRun"
+            - type: "null"
+        unacknowledged_anomalies:
+          type: integer
+        unacknowledged_critical_anomalies:
+          type: integer
+          description: Unacknowledged critical anomalies shown as a dedicated high-priority operations alert.
+        unacknowledged_bill_revisions:
+          type: integer
+        database:
+          type: string
+          enum: [ready, unavailable]
+        version:
+          type: string
+          const: version_1
+        migrations:
+          type: string
+          enum: [ready, missing, unknown]
+        worker:
+          type: string
+          enum: [ready, stale, unavailable]
+        worker_heartbeat_at:
+          type: [string, "null"]
+          format: date-time
+        last_aggregate_at:
+          type: [string, "null"]
+          format: date-time
+        mail_provider:
+          type: string
+          enum: [unconfigured, smtp, tencent_ses]
+        mail_configured:
+          type: boolean
+        scan_schedule:
+          type: object
+          required: [cron, bound_cron, qps, concurrency]
+          properties:
+            cron:
+              type: string
+            bound_cron:
+              type: string
+              description: Hourly priority scan schedule for meters bound to active users.
+            qps:
+              type: number
+            concurrency:
+              type: integer
+        bill_schedule:
+          type: object
+          required: [cron, qps, concurrency, mode]
+          properties:
+            cron:
+              type: string
+            qps:
+              type: number
+            concurrency:
+              type: integer
+            mode:
+              type: string
+              const: visible_months
+        detail_schedule:
+          type: object
+          required: [cron, qps, concurrency]
+          properties:
+            cron: {type: string}
+            qps: {type: number}
+            concurrency: {type: integer}
+
+    InventoryImport:
+      type: object
+      required: [id, source_name, source_hash, imported_at, status, counts]
+      properties:
+        id:
+          type: string
+          format: uuid
+        source_name:
+          type: string
+        source_hash:
+          type: string
+        source_updated_at:
+          type: [string, "null"]
+          format: date-time
+        imported_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [validated, applied, rejected]
+        counts:
+          $ref: "#/components/schemas/InventoryDiff"
+
+    InventoryDiff:
+      type: object
+      required: [total, added, updated, deactivated, duplicate, invalid, excluded]
+      properties:
+        total:
+          type: integer
+        added:
+          type: integer
+        updated:
+          type: integer
+        deactivated:
+          type: integer
+        duplicate:
+          type: integer
+        invalid:
+          type: integer
+        excluded:
+          type: integer
+
+    InventoryValidation:
+      type: object
+      required: [validation_id, source_hash, valid_until, diff]
+      properties:
+        validation_id:
+          type: string
+          format: uuid
+        source_hash:
+          type: string
+        valid_until:
+          type: string
+          format: date-time
+        diff:
+          $ref: "#/components/schemas/InventoryDiff"
+        errors:
+          type: array
+          items:
+            type: string
+
+    InventoryTree:
+      type: object
+      required: [updated_at, inventory_total, excluded_total, campuses]
+      properties:
+        updated_at:
+          type: string
+          format: date-time
+        inventory_total:
+          type: integer
+        excluded_total:
+          type: integer
+        campuses:
+          type: array
+          items:
+            type: object
+            required: [name, buildings]
+            properties:
+              name:
+                type: string
+              buildings:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+
+    LatestReading:
+      type: object
+      required: [reading_time, observed_at, prepaid_yuan, total_yuan, total_kwh, freshness]
+      properties:
+        reading_time:
+          type: string
+          format: date-time
+        observed_at:
+          type: string
+          format: date-time
+        prepaid_yuan:
+          $ref: "#/components/schemas/Decimal"
+        subsidy_yuan:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        total_yuan:
+          $ref: "#/components/schemas/Decimal"
+        total_kwh:
+          $ref: "#/components/schemas/Decimal"
+        meter_status:
+          type: string
+        freshness:
+          type: string
+          enum: [fresh, stale]
+
+    MeterOverview:
+      type: object
+      required: [meter, location, availability, quality]
+      properties:
+        meter:
+          type: string
+        location:
+          type: object
+          required: [building, floor, room]
+          properties:
+            building:
+              type: string
+            floor:
+              type: string
+            room:
+              type: string
+        latest:
+          oneOf:
+            - $ref: "#/components/schemas/LatestReading"
+            - type: "null"
+        recent_7d_kwh:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        availability:
+          $ref: "#/components/schemas/Availability"
+        quality:
+          $ref: "#/components/schemas/Quality"
+
+    MeterRefresh:
+      type: object
+      required: [meter, status, latest, refreshed_at, next_allowed_at, availability, quality]
+      properties:
+        meter:
+          type: string
+        status:
+          type: string
+          enum: [refreshed, cached, upstream_unavailable]
+        latest:
+          oneOf:
+            - $ref: "#/components/schemas/LatestReading"
+            - type: "null"
+        refreshed_at:
+          type: string
+          format: date-time
+        next_allowed_at:
+          type: string
+          format: date-time
+        availability:
+          $ref: "#/components/schemas/Availability"
+        quality:
+          $ref: "#/components/schemas/Quality"
+
+    SeriesPoint:
+      type: object
+      required: [period_start, availability]
+      properties:
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        value:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        meters:
+          type: integer
+          description: >
+            该时间桶内逐日判定后的日均非空房数。周/月桶不会使用查询当天的状态。
+        availability:
+          $ref: "#/components/schemas/Availability"
+        quality:
+          $ref: "#/components/schemas/Quality"
+
+    TimeSeries:
+      type: object
+      required: [metric, unit, granularity, availability, quality, points]
+      properties:
+        metric:
+          type: string
+        unit:
+          type: string
+          enum: [yuan, kWh]
+        granularity:
+          type: string
+          enum: [day, week, month]
+        scope_meters:
+          type: integer
+          description: 各桶日均非空房数的最大值，供客户端作兜底除数。
+        availability:
+          $ref: "#/components/schemas/Availability"
+        quality:
+          $ref: "#/components/schemas/Quality"
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/SeriesPoint"
+
+    DayNightSlice:
+      type: object
+      required: [kwh, hours, kwh_per_hour, intervals, days, purity]
+      properties:
+        kwh:
+          $ref: "#/components/schemas/Decimal"
+        hours:
+          type: number
+          description: 计入本侧的抄表区间总时长。白天与夜间的时长本来就不相等，比较强度必须用 kwh_per_hour。
+        kwh_per_hour:
+          $ref: "#/components/schemas/Decimal"
+        intervals:
+          type: integer
+        days:
+          type: integer
+          description: 本侧覆盖了多少个不同的自然日。
+        purity:
+          type: number
+          description: 计入时长中真正落在本侧窗口内的比例；1 = 抄表时间与 06:00/18:00 完全对齐。
+
+    DayNightSplit:
+      type: object
+      required:
+        [meter, from, to, timezone, day_window, night_window, day, night, skipped_intervals, availability]
+      properties:
+        meter:
+          type: string
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+          example: Asia/Shanghai
+        day_window:
+          type: string
+          example: "06:00-18:00"
+        night_window:
+          type: string
+          example: "18:00-06:00"
+        day:
+          $ref: "#/components/schemas/DayNightSlice"
+        night:
+          $ref: "#/components/schemas/DayNightSlice"
+        skipped_intervals:
+          type: integer
+          description: 横跨 06:00 / 18:00、时长过长或过短而无法归属的区间数。
+        availability:
+          $ref: "#/components/schemas/Availability"
+
+    MonthlyBill:
+      type: object
+      required: [month, start_kwh, end_kwh, usage_kwh, cost_yuan]
+      properties:
+        month:
+          type: string
+          pattern: "^[0-9]{4}-[0-9]{2}$"
+        start_kwh:
+          $ref: "#/components/schemas/Decimal"
+        end_kwh:
+          $ref: "#/components/schemas/Decimal"
+        usage_kwh:
+          $ref: "#/components/schemas/Decimal"
+        cost_yuan:
+          $ref: "#/components/schemas/Decimal"
+
+    CampusSummary:
+      type: object
+      required:
+        [scope, from, to, availability, quality, total_kwh, per_room_kwh]
+      properties:
+        scope:
+          type: object
+          additionalProperties:
+            type: string
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        total_kwh:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        per_room_kwh:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        meters:
+          type: integer
+          description: per_room_kwh 的除数 —— 查询窗口内逐日判定后的日均非空房数。
+        availability:
+          $ref: "#/components/schemas/Availability"
+        quality:
+          $ref: "#/components/schemas/Quality"
+
+    RankingEntry:
+      type: object
+      required: [rank, label, is_self, value_kwh]
+      description: >
+        Identity is masked on the server. The rankings endpoint is anonymous, so plaintext
+        building/floor/room are returned only for the caller's own row (is_self), and every
+        other row carries just the pre-rendered label built from that meter owner's
+        display/mask preferences. Meters whose owner opted out are absent entirely.
+      properties:
+        rank:
+          type: integer
+        label:
+          type: string
+          description: Server-rendered identity, e.g. "12栋 · 4楼" or "匿名参与"
+          examples: ["12栋 · 4楼"]
+        is_self:
+          type: boolean
+        building:
+          type: [string, "null"]
+          description: Plaintext, only when is_self is true
+        floor:
+          type: [string, "null"]
+        room:
+          type: [string, "null"]
+        value_kwh:
+          $ref: "#/components/schemas/Decimal"
+          description: >
+            usage/surge/drop 为周期总用量；saving 为“非空日平均用量 × 标准周期天数”
+            （日=1、周=7、月=30），因此空房日既不参与也不会让低总量获得不公平优势。
+        change_ratio:
+          type: [number, "null"]
+
+    LeaderboardPreference:
+      type: object
+      required:
+        [opted_in, show_building, show_floor, show_room, show_nickname, mask_building, mask_floor, mask_room, updated_at]
+      description: >
+        Leaderboard participation and identity masking. Defaults for a meter without an account:
+        opted in; building, floor and room shown and masked. Nickname hidden by default.
+      properties:
+        opted_in:
+          type: boolean
+          description: When false the meter never appears in campus/rankings
+        show_building: { type: boolean }
+        show_floor: { type: boolean }
+        show_room: { type: boolean }
+        show_nickname: { type: boolean }
+        mask_building: { type: boolean }
+        mask_floor: { type: boolean }
+        mask_room: { type: boolean }
+        updated_at: { type: string, format: date-time }
+
+    Channel:
+      type: object
+      required: [channel, enabled, config, secret_set]
+      properties:
+        channel:
+          type: string
+          enum: [mail, sms, dingtalk, wecom, wecom_webhook, feishu, lark, discord, webhook, bark, gotify, whatsapp, pushplus, serverchan_turbo, serverchan3, mp, qq, napcat, telegram]
+        enabled: { type: boolean }
+        config:
+          type: object
+          description: Per-channel fields; secret values are masked or null on read.
+          additionalProperties: true
+        secret_set:
+          type: object
+          description: Which secret fields currently hold a stored value.
+          additionalProperties: { type: boolean }
+        last_result:
+          oneOf:
+            - $ref: "#/components/schemas/ChannelTestResult"
+            - type: "null"
+        updated_at: { type: string, format: date-time }
+
+    ChannelUpdate:
+      type: object
+      required: [enabled, config]
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean }
+        config:
+          type: object
+          description: Omit a secret field to keep the stored value; send null to clear it.
+          additionalProperties: true
+
+    ChannelList:
+      type: object
+      required: [channels]
+      properties:
+        channels:
+          type: array
+          items: { $ref: "#/components/schemas/Channel" }
+
+    ChannelTestResult:
+      type: object
+      required: [status, at]
+      properties:
+        status: { type: string, enum: [ok, failed] }
+        at: { type: string, format: date-time }
+        message: { type: [string, "null"] }
+        latency_ms: { type: [integer, "null"] }
+
+    NotificationSettings:
+      type: object
+      required: [low_balance_alert, threshold_yuan, scheduled_digest, period, push_time]
+      additionalProperties: false
+      properties:
+        low_balance_alert: { type: boolean }
+        threshold_yuan:
+          type: string
+          pattern: "^(?:(?:[1-9]|[1-4][0-9])(?:\\.[0-9]{1,2})?|50(?:\\.0{1,2})?)$"
+          default: "10"
+          description: "Low-balance threshold in yuan, from 1 through 50"
+        scheduled_digest: { type: boolean }
+        period: { type: string, enum: [daily, twice, every3, weekly] }
+        push_time: { type: string, pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$" }
+        timezone: { type: string, default: "Asia/Shanghai" }
+        templates:
+          $ref: "#/components/schemas/NotificationTemplates"
+          description: User-defined title and body templates applied only to non-email channels.
+        updated_at: { type: string, format: date-time }
+
+    NotificationTemplates:
+      type: object
+      additionalProperties: false
+      properties:
+        low_balance:
+          $ref: "#/components/schemas/NotificationMessageTemplate"
+        digest:
+          $ref: "#/components/schemas/NotificationMessageTemplate"
+
+    NotificationMessageTemplate:
+      type: object
+      required: [title, body]
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        body:
+          type: string
+          minLength: 1
+          maxLength: 4000
+      description: Go text/template text using documented fields such as {{.balance_yuan}} and {{.meter_number}}.
+
+    PushLog:
+      type: object
+      required: [id, sent_at, channel, kind, status, summary]
+      properties:
+        id: { type: string, format: uuid }
+        sent_at: { type: string, format: date-time }
+        channel: { type: string }
+        kind: { type: string, enum: [low_balance, digest, test, system] }
+        status: { type: string, enum: [accepted, delivered, failed, skipped] }
+        summary: { type: string }
+        error: { type: [string, "null"] }
+
+    PushLogPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/PushLog" }
+        next_cursor: { type: [string, "null"] }
+
+    Ranking:
+      type: object
+      required: [period, mode, current_period, previous_period, updated_at, next_update_at, availability, quality, excluded_count, items]
+      properties:
+        period:
+          type: string
+          enum: [day, week, month]
+        mode:
+          type: string
+          enum: [usage, saving, surge, drop]
+        current_period:
+          $ref: "#/components/schemas/RankingPeriod"
+        previous_period:
+          $ref: "#/components/schemas/RankingPeriod"
+        updated_at:
+          type: string
+          format: date-time
+          description: Scheduled boundary at which this completed-period snapshot became current.
+        next_update_at:
+          type: string
+          format: date-time
+          description: Next scheduled cache expiry and period switch.
+        availability:
+          $ref: "#/components/schemas/Availability"
+        quality:
+          $ref: "#/components/schemas/Quality"
+        excluded_count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingEntry"
+        self:
+          oneOf:
+            - $ref: "#/components/schemas/RankingSelf"
+            - type: "null"
+          description: >
+            Present only for a signed-in caller with a bound meter that has usage in the period.
+            The rank is computed over the whole population, so it is meaningful well outside the
+            returned page — that number is derivable from the public board anyway, and hiding it
+            only stops people from seeing themselves.
+
+    RankingPeriod:
+      type: object
+      required: [from, to]
+      description: Inclusive natural-date boundaries actually used to calculate the ranking.
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+
+    RankingSelf:
+      type: object
+      required: [rank, total, percentile, label, value_kwh, in_list, neighbors]
+      properties:
+        rank:
+          type: integer
+        total:
+          type: integer
+          description: Size of the ranked population under the current filters.
+        percentile:
+          type: number
+          format: double
+          description: rank / total. Interpretation flips with mode (rank 1 is the heaviest user
+            on the usage board and the lightest on the saving board).
+        label:
+          type: string
+          description: Plaintext location; only ever sent to the owner.
+        building:
+          type: string
+        floor:
+          type: string
+        room:
+          type: string
+        value_kwh:
+          $ref: "#/components/schemas/Decimal"
+        change_ratio:
+          type: [number, "null"]
+          format: double
+        in_list:
+          type: boolean
+          description: Whether this rank already appears in `items`.
+        neighbors:
+          type: array
+          description: One entry above and below (including self), so a bare "#137" has context.
+            Neighbours stay masked according to their own preferences.
+          items:
+            $ref: "#/components/schemas/RankingEntry"
+
+    CampusBills:
+      type: object
+      required: [months, source]
+      properties:
+        from_month:
+          type: string
+        to_month:
+          type: string
+        building:
+          type: string
+        months:
+          type: array
+          items:
+            $ref: "#/components/schemas/CampusBillMonth"
+        buildings:
+          description: Per-building split of the last month in range.
+          type: array
+          items:
+            $ref: "#/components/schemas/CampusBillBuilding"
+        source:
+          description: >
+            Always `monthly_bill`. Marks these figures as the independent official monthly
+            reconciliation source; /campus/series uses official daily detail where settled.
+          type: string
+          enum: [monthly_bill]
+
+    CampusBillMonth:
+      type: object
+      required: [month, total_kwh, cost_yuan, meters, per_room_kwh]
+      properties:
+        month:
+          type: string
+          pattern: '^[0-9]{4}-[0-9]{2}$'
+        total_kwh:
+          $ref: "#/components/schemas/Decimal"
+        cost_yuan:
+          $ref: "#/components/schemas/Decimal"
+        meters:
+          description: >
+            该月逐日判定后的日均非空房数。月度总量仍包含空房用量，户均除以此值。
+          type: integer
+        per_room_kwh:
+          $ref: "#/components/schemas/Decimal"
+
+    CampusBillBuilding:
+      type: object
+      required: [building, total_kwh, meters, share]
+      properties:
+        building:
+          type: string
+        total_kwh:
+          $ref: "#/components/schemas/Decimal"
+        meters:
+          type: integer
+        share:
+          type: number
+          format: double
+
+    CampusBreakdown:
+      type: object
+      required: [group_by, granularity, buckets, total_kwh, max_cell_kwh, rows, availability, quality]
+      properties:
+        group_by:
+          type: string
+          enum: [building, floor]
+        granularity:
+          type: string
+          enum: [day, week, month]
+        buckets:
+          type: array
+          items:
+            type: string
+            format: date-time
+        total_kwh:
+          $ref: "#/components/schemas/Decimal"
+        max_cell_kwh:
+          $ref: "#/components/schemas/Decimal"
+          description: Largest single cell; the heatmap normalises against it.
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/CampusBreakdownRow"
+        availability:
+          $ref: "#/components/schemas/Availability"
+        quality:
+          $ref: "#/components/schemas/Quality"
+
+    CampusBreakdownRow:
+      type: object
+      required: [key, total_kwh, share, meters, meter_counts, values]
+      properties:
+        key:
+          type: string
+          description: Building name, or floor name when scoped to one building.
+        total_kwh:
+          $ref: "#/components/schemas/Decimal"
+        share:
+          type: number
+          format: double
+          description: Fraction of the scope total, 0..1.
+        meters:
+          type: integer
+          description: >
+            整个查询窗口的日均非空房数，用作行合计的户均除数。
+        meter_counts:
+          type: array
+          description: 与 values 一一对应；每项是该时间桶内的日均非空房数。
+          items:
+            type: integer
+            minimum: 0
+        values:
+          type: array
+          description: Aligned one-to-one with `buckets`. null means no valid reading for that
+            cell, which is not the same as zero consumption.
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/Decimal"
+              - type: "null"
+
+    AdminActor:
+      type: object
+      required: [user_id, label, role, via_token]
+      properties:
+        user_id:
+          type: string
+          description: Empty when authenticated with ADMIN_TOKEN.
+        label:
+          type: string
+          description: Email for session auth, or "admin-token" for machine auth.
+        role:
+          type: string
+          enum: [user, operator, admin]
+        via_token:
+          type: boolean
+
+    AdminSession:
+      type: object
+      required: [actor, environment, version, secrets_ready, admin_count]
+      properties:
+        actor:
+          $ref: "#/components/schemas/AdminActor"
+        environment:
+          type: string
+          enum: [development, test, production]
+        version:
+          type: string
+        secrets_ready:
+          type: boolean
+          description: >
+            False when the server has no SETTINGS_ENCRYPTION_KEY. The panel warns up front
+            rather than letting the user discover it when a save fails.
+        admin_count:
+          type: integer
+          description: Active administrators. Zero means the first one still needs bootstrapping.
+
+    AdminUser:
+      type: object
+      required:
+        [id, email, nickname, role, status, created_at, active_sessions, place, channels_enabled]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        nickname: { type: string }
+        role:
+          type: string
+          enum: [user, operator, admin]
+        status:
+          type: string
+          enum: [active, disabled]
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: [string, "null"], format: date-time }
+        email_verified_at:
+          type: [string, "null"]
+          format: date-time
+          description: Set when registration or an email change verifies ownership.
+        active_sessions:
+          type: integer
+          description: Unrevoked, unexpired refresh sessions, i.e. roughly the number of devices.
+        meter: { type: [string, "null"] }
+        place: { type: string }
+        channels_enabled: { type: integer }
+
+    AuditEntry:
+      type: object
+      required: [id, actor_label, action, target, detail, request_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        actor_label: { type: string }
+        action:
+          type: string
+          example: settings.mail.save
+        target: { type: string }
+        detail:
+          type: object
+          additionalProperties: true
+          description: Metadata only. Credential values are never recorded here.
+        request_id: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ScannerSettings:
+      type: object
+      required: [shared, balance, bills, daily_details]
+      properties:
+        shared:
+          $ref: "#/components/schemas/SharedUpstreamSettings"
+        balance:
+          $ref: "#/components/schemas/BalanceScannerSettings"
+        bills:
+          $ref: "#/components/schemas/BatchScannerSettings"
+        daily_details:
+          $ref: "#/components/schemas/DetailScannerSettings"
+
+    SharedUpstreamSettings:
+      type: object
+      required: [qps, concurrency]
+      description: >-
+        The gate every collector passes through. It bounds the three scanners
+        together, so it is the binding limit whenever their sum exceeds it.
+      properties:
+        qps: {type: number, format: double, exclusiveMinimum: 0}
+        concurrency: {type: integer, minimum: 1}
+
+    BatchScannerSettings:
+      type: object
+      required: [cron, qps, concurrency, retry_max, month_retry_max, enabled]
+      properties:
+        cron: {type: string, description: Five-field cron expression.}
+        qps: {type: number, format: double, exclusiveMinimum: 0}
+        concurrency: {type: integer, minimum: 1}
+        retry_max: {type: integer, minimum: 0}
+        month_retry_max: {type: integer, minimum: 0}
+        enabled: {type: boolean, description: Disables scheduling but not manual runs.}
+
+    BalanceScannerSettings:
+      type: object
+      required: [cron, bound_cron, qps, concurrency, retry_max, enabled]
+      properties:
+        cron: {type: string, description: Full-inventory five-field cron expression.}
+        bound_cron: {type: string, description: Priority bound-meter five-field cron expression; empty disables it.}
+        qps: {type: number, format: double, exclusiveMinimum: 0}
+        concurrency: {type: integer, minimum: 1}
+        retry_max: {type: integer, minimum: 0}
+        enabled: {type: boolean, description: Disables both balance schedules but not manual runs.}
+
+    DetailScannerSettings:
+      allOf:
+        - $ref: "#/components/schemas/BatchScannerSettings"
+        - type: object
+          required: [retry_cron, bootstrap_from, auto_bootstrap]
+          properties:
+            retry_cron:
+              type: string
+              description: Five-field cron for retrying only meters whose previous day is still unpublished; empty disables it.
+            bootstrap_from:
+              type: string
+              pattern: ^[0-9]{4}-(0[1-9]|1[0-2])$
+            auto_bootstrap: {type: boolean}
+
+    SchoolBinding:
+      type: object
+      required: [area_id]
+      properties:
+        provider:
+          type: string
+          description: Registered upstream implementation. Empty picks the only one registered.
+          example: bdfairy
+        area_id:
+          type: string
+          maxLength: 64
+          description: Upstream area id. Empty stops collection.
+          example: "83"
+        area_name:
+          type: string
+          maxLength: 120
+          description: Display name only. Empty is filled in from the provider's list.
+        base_url:
+          type: string
+          description: Upstream entry point. Empty uses the provider's own default.
+    SchoolOption:
+      type: object
+      required: [id, name, balance, bill, detail]
+      properties:
+        id: { type: string, example: "83" }
+        name: { type: string, example: 示例大学 }
+        balance:
+          type: boolean
+          description: Balance readings were confirmed working for this school.
+        bill:
+          type: boolean
+          description: Monthly bills were confirmed working for this school.
+        detail:
+          type: boolean
+          description: Daily details were confirmed working for this school.
+    SchoolProvider:
+      type: object
+      required: [name, display_name, default_base_url, schools]
+      properties:
+        name: { type: string, example: bdfairy }
+        display_name: { type: string }
+        default_base_url:
+          type: string
+          description: Empty means the deployment must supply an explicit base URL.
+        schools:
+          type: array
+          description: Empty means this provider ships no list; the operator supplies an area id.
+          items:
+            $ref: "#/components/schemas/SchoolOption"
+    SchoolSettingsView:
+      type: object
+      required: [providers, current, source, configured]
+      properties:
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchoolProvider"
+        current:
+          $ref: "#/components/schemas/SchoolBinding"
+        source:
+          type: string
+          enum: [env, panel]
+        configured:
+          type: boolean
+          description: False means every collector is idle waiting for a school.
+        updated_at: { type: string, format: date-time, nullable: true }
+        updated_by: { type: string }
+    ScannerSettingsView:
+      type: object
+      required: [settings, source, limits]
+      properties:
+        settings:
+          $ref: "#/components/schemas/ScannerSettings"
+        source:
+          type: string
+          enum: [env, panel]
+          description: env means nothing has been saved from the panel yet.
+        limits:
+          type: object
+          required: [shared, balance, bills, daily_details]
+          properties:
+            shared:
+              $ref: "#/components/schemas/ScannerSafetyLimits"
+            balance:
+              $ref: "#/components/schemas/ScannerSafetyLimits"
+            bills:
+              $ref: "#/components/schemas/ScannerSafetyLimits"
+            daily_details:
+              $ref: "#/components/schemas/ScannerSafetyLimits"
+        updated_at: { type: [string, "null"], format: date-time }
+        updated_by: { type: string }
+
+    ScannerSafetyLimits:
+      type: object
+      required: [max_qps, max_concurrency]
+      properties:
+        max_qps: {type: number, format: double}
+        max_concurrency: {type: integer}
+
+    MailSettings:
+      type: object
+      description: >
+        The plaintext half of the mail configuration. Empty fields mean "fall back to the
+        environment variable", not "clear this" — otherwise one careless save would take out the
+        whole mail path.
+      properties:
+        provider:
+          type: string
+          enum: ["", resend, smtp, tencent_ses]
+          description: Empty disables mail entirely.
+        from: { type: string }
+        admin_to: { type: string }
+        base_url:
+          type: string
+          description: Link prefix inside emails. No domain is ever hard-coded in the code.
+        reply_to: { type: string }
+        smtp:
+          type: object
+          properties:
+            host: { type: string }
+            port: { type: integer }
+            user: { type: string }
+            tls_mode:
+              type: string
+              enum: [tls, starttls]
+        tencent:
+          type: object
+          properties:
+            secret_id: { type: string }
+            region: { type: string }
+            from_email: { type: string }
+            template_id: { type: integer }
+
+    MailSettingsView:
+      type: object
+      required:
+        [
+          settings,
+          secret_set,
+          secret_masked,
+          source,
+          effective_provider,
+          missing,
+          ready,
+          secrets_writable,
+          secrets_unreadable,
+          providers,
+        ]
+      properties:
+        settings:
+          $ref: "#/components/schemas/MailSettings"
+        secret_set:
+          type: object
+          additionalProperties: { type: boolean }
+        secret_masked:
+          type: object
+          additionalProperties: { type: string }
+          description: Masked as re_E9••••snE9 — enough to confirm which key it is, not enough
+            to reconstruct it.
+        source:
+          type: string
+          enum: [env, panel]
+        effective_provider:
+          type: string
+          description: Provider actually in force after merging with environment variables.
+        missing:
+          type: array
+          items: { type: string }
+          description: What is still needed before mail can be sent. Empty means ready.
+        ready: { type: boolean }
+        secrets_writable:
+          type: boolean
+          description: False when SETTINGS_ENCRYPTION_KEY is absent.
+        secrets_unreadable:
+          type: boolean
+          description: >
+            Ciphertext exists but the current key cannot open it (the key was rotated).
+            Reported explicitly so the panel never shows "not configured" for a stored
+            credential — that reading would invite a save that wipes the real one.
+        providers:
+          type: array
+          items: { type: string }
+        updated_at: { type: [string, "null"], format: date-time }
+        updated_by: { type: string }
+
+    UnavailableCapability:
+      type: object
+      required: [availability, reason_code, message, quality]
+      properties:
+        availability:
+          type: string
+          const: unavailable
+        reason_code:
+          type: string
+        message:
+          type: string
+        quality:
+          $ref: "#/components/schemas/Quality"
+
+    MailDelivery:
+      type: object
+      required: [id, provider, message_type, recipient_masked, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          enum: [smtp, tencent_ses]
+        message_type:
+          type: string
+        recipient_masked:
+          type: string
+        status:
+          type: string
+          enum: [pending, sent, failed]
+        created_at:
+          type: string
+          format: date-time
+        sent_at:
+          type: [string, "null"]
+          format: date-time

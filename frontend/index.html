@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#d6001c" />
+    <title>电费推送面板</title>
+    <!-- 字体本地托管（见 src/styles/fonts.css）。这里只预载首屏一定会用到的两份
+         latin 子集：它们在 CSS 解析出来之前就开始下载，省掉一次字体闪烁。 -->
+    <link rel="preload" href="/fonts/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <script>
+      // 提前应用持久化主题，避免暗色模式闪白
+      try {
+        var s = JSON.parse(localStorage.getItem('edu-power-config') || '{}')
+        if (s.theme) document.documentElement.setAttribute('data-theme', s.theme)
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

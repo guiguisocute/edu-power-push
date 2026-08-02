@@ -1,0 +1,9 @@
+.git
+.env
+.cache
+bin
+bootstrap
+coverage.out
+*.log
+scripts
+docs

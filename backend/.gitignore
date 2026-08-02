@@ -1,0 +1,11 @@
+/.env
+/.cache/
+/bin/
+/bootstrap/
+/coverage.out
+*.log
+.spec-workflow
+
+# go build 在 Windows 上会把二进制丢在包目录里（api.exe / admin.exe / worker.exe）。
+# /bin/ 挡不住它们，而它们是几十 MB 的产物，进版本库纯属浪费。
+*.exe

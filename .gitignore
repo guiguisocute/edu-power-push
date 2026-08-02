@@ -1,0 +1,43 @@
+# 依赖与构建产物
+node_modules/
+dist/
+/output/
+/.deploy-artifacts/
+
+# 本地环境变量（含密钥）。
+# 用「先全忽略、再放行模板」而不是逐个点名：点名的写法漏掉一个新文件名
+# （.env.backup、.env.ha-active…）就是一次凭据泄露，而这个写法默认是安全的。
+.env*
+!.env.example
+# 例外：Vite 的分环境配置是**共享的、不含密钥**的构建参数（模式、是否编译管理界面），
+# 少了它们 CI 与新克隆构建出来的东西跟本地不一样。个人覆盖仍然只写 .env.local。
+!frontend/.env
+!frontend/.env.development
+!frontend/.env.test
+!frontend/.env.production
+!frontend/.env.local.example
+*.local
+# 任何 age / 密钥文件都不该出现在仓库里，即使名字看起来像模板
+*.age
+age.key
+recipients.txt
+targets.tsv
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.log
+.spec-workflow
+
+
+# 数据库快照（含用户数据，绝不进版本库）
+/backups/
+# 库存与余额引导数据（由 backend/scripts/prepare_bootstrap.sh 从外部数据目录复制）
+/backend/bootstrap/
+/frontend/tsconfig.tsbuildinfo
+# 浏览器核查工具的临时输出（控制台日志与页面快照）
+/.playwright-cli/
+# 参考工程：只在本地对照上游协议用，不属于本仓库
+/bdfairy-Fetch/
+

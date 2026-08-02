@@ -1,0 +1,11 @@
+node_modules
+dist
+.DS_Store
+.verify
+.smoke
+tsconfig.tsbuildinfo
+
+# 按 Vite 约定：.env 与 .env.[mode] 是共享的、不含密钥的配置，要提交；
+# 只有本机覆盖（可能含 ADMIN_TOKEN）不提交。
+*.local
+.env*.local

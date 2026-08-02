@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>电费余额提醒 · {{brand}}</title>
+</head>
+
+<body style="margin:0;padding:0;background-color:#fafafa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC',system-ui,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#fafafa;padding:40px 16px;">
+        <tr>
+            <td align="center">
+                <table width="560" cellpadding="0" cellspacing="0" border="0"
+                    style="background-color:#ffffff;border:1px solid #e3e3e3;">
+
+                    <!-- brand header -->
+                    <tr>
+                        <td style="padding:22px 36px;border-bottom:1px solid #efefef;">
+                            <table cellpadding="0" cellspacing="0" border="0">
+                                <tr>
+                                    <td style="vertical-align:middle;padding-right:12px;line-height:0;font-size:0;">
+                                        <!-- Gmail 等会剥掉内联 SVG；用 multipart 内嵌 PNG（cid:brand-mark） -->
+                                        <img src="cid:brand-mark" width="20" height="20" alt="" style="display:block;width:20px;height:20px;border:0;outline:none;text-decoration:none;" />
+                                    </td>
+                                    <td style="vertical-align:middle;">
+                                        <p style="margin:0;font-size:13px;font-weight:600;color:#0a0a0a;letter-spacing:-0.025em;line-height:1.2;">
+                                            {{brand}}
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+
+                    <!-- body -->
+                    <tr>
+                        <td style="padding:36px 36px 28px;">
+
+                            <p style="margin:0 0 14px;font-family:Consolas,'SF Mono',Menlo,monospace;font-size:10px;font-weight:500;letter-spacing:0.2em;color:#8e8e8e;">
+                                BALANCE LOW
+                            </p>
+
+                            <p style="margin:0 0 10px;font-size:28px;font-weight:600;color:#0a0a0a;letter-spacing:-0.04em;line-height:1.15;">
+                                余额低于阈值
+                            </p>
+
+                            <p style="margin:0 0 28px;font-size:13.5px;color:#575757;line-height:1.65;">
+                                你好，你设置的电费余额提醒已触发。当前余额已低于设定阈值，建议尽快充值，以免影响正常使用。
+                            </p>
+
+                            <!-- status pill -->
+                            <p style="margin:0 0 28px;">
+                                <span style="display:inline-block;padding:5px 11px;font-size:12px;font-weight:500;color:#d6001c;background-color:rgba(214,0,28,0.08);">
+                                    低于阈值
+                                </span>
+                            </p>
+
+                            <!-- metrics -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #efefef;">
+                                <tr>
+                                    <td width="50%" style="padding:22px 16px 0 0;vertical-align:top;">
+                                        <p style="margin:0 0 8px;font-family:Consolas,'SF Mono',Menlo,monospace;font-size:9.5px;font-weight:500;letter-spacing:0.16em;color:#8e8e8e;">
+                                            BALANCE
+                                        </p>
+                                        <p style="margin:0 0 4px;font-size:12px;color:#8e8e8e;">当前余额</p>
+                                        <p style="margin:0;font-size:28px;font-weight:600;color:#d6001c;letter-spacing:-0.04em;line-height:1.15;">
+                                            {{balance}} <span style="font-size:13px;font-weight:500;color:#8e8e8e;">元</span>
+                                        </p>
+                                    </td>
+                                    <td width="50%" style="padding:22px 0 0 16px;vertical-align:top;border-left:1px solid #efefef;">
+                                        <p style="margin:0 0 8px;font-family:Consolas,'SF Mono',Menlo,monospace;font-size:9.5px;font-weight:500;letter-spacing:0.16em;color:#8e8e8e;">
+                                            THRESHOLD
+                                        </p>
+                                        <p style="margin:0 0 4px;font-size:12px;color:#8e8e8e;">提醒阈值</p>
+                                        <p style="margin:0;font-size:28px;font-weight:600;color:#0a0a0a;letter-spacing:-0.04em;line-height:1.15;">
+                                            {{threshold}} <span style="font-size:13px;font-weight:500;color:#8e8e8e;">元</span>
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px;border-top:1px solid #efefef;">
+                                <tr>
+                                    <td style="padding:18px 0 0;font-size:12.5px;color:#575757;line-height:1.8;">
+                                        <strong style="color:#0a0a0a;">电表号：</strong>{{meter}}<br>
+                                        <strong style="color:#0a0a0a;">宿舍楼栋：</strong>{{building}}<br>
+                                        <strong style="color:#0a0a0a;">楼层：</strong>{{floor}}<br>
+                                        <strong style="color:#0a0a0a;">房间号：</strong>{{room}}
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <p style="margin:28px 0 0;font-size:13px;color:#575757;line-height:1.65;">
+                                充值完成后可忽略本邮件。如需调整提醒阈值，可在设置中自行修改。
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- footer -->
+                    <tr>
+                        <td style="padding:20px 36px 28px;border-top:1px solid #efefef;">
+                            <p style="margin:0 0 10px;font-size:12.5px;color:#8e8e8e;line-height:1.5;">
+                                {{brand}}
+                            </p>
+                            <p style="margin:0;font-size:12px;color:#8e8e8e;line-height:1.6;">
+                                如不想再接收此类邮件，可 <a href="{{unsubscribe_url}}"
+                                    style="color:#d6001c;text-decoration:none;">点击退订</a>
+                            </p>
+                        </td>
+                    </tr>
+
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+
+</html>

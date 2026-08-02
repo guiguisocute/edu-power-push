@@ -1,0 +1,55 @@
+# 只做「代码是不是还能编译、测试是不是还绿」这一件事。
+# 部署流水线不在这个仓库里：它跟具体机器绑得太死，公开出来对别人没有价值。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # gofmt 单独跑一步：格式问题的报错信息比 `go vet` 清楚得多
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化，请运行 gofmt -w ./backend：" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      # smoke 是这个前端唯一的测试套件：它把每个视图与浮层做一次 SSR 渲染，
+      # 顺带跑 src/**/*.test.ts 里的纯函数断言。不在 CI 跑等于没有。
+      - run: pnpm smoke
+      - run: pnpm exec vite build
