@@ -187,7 +187,151 @@ docker compose up -d db api worker web
 
 **未选学校时服务仍运行**，全部采集器跳过。多校部署的容器禁止替部署者默认选定学校。
 
-更细的导入、分档扫描、环境隔离见 [`backend/docs/DEPLOYMENT.md`](backend/docs/DEPLOYMENT.md)。
+---
+
+## 部署
+
+四个容器：`db` + `api` + `worker` + `web`。没有别的依赖，不需要 Kubernetes，也不需要在宿主机装 Go 或 Node。
+
+### 1. 准备 `.env`
+
+```bash
+cp .env.example .env
+```
+
+必填三项，缺一个 compose 会直接拒绝启动（`:?` 断言）：
+
+| 变量 | 生成方式 |
+|---|---|
+| `POSTGRES_PASSWORD` | `openssl rand -hex 32` |
+| `ADMIN_TOKEN` | `openssl rand -hex 32` |
+| `AUTH_JWT_SECRET` | `openssl rand -hex 32`（与上一条**不要**复用） |
+
+另外几个按环境改：
+
+| 变量 | 说明 |
+|---|---|
+| `APP_ENV` | `development` / `test` / `production`。`production` 会强制 HTTPS cookie |
+| `COMPOSE_PROJECT_NAME` | 容器与卷的前缀。**改它等于换一个空数据库**，已有环境不要改 |
+| `APP_IMAGE` / `WEB_IMAGE` | 见下一节。每个环境钉自己的 tag |
+| `API_PORT` / `WEB_PORT` | 宿主回环端口，默认 8080 / 8081。同机多环境必须错开 |
+| `SETTINGS_ENCRYPTION_KEY` | `openssl rand -base64 32`。留空则面板只能改非敏感设置，不会静默存明文 |
+| `PUBLIC_BASE_URL` | 邮件里指向站点的链接。代码里没有任何域名，只有这一处 |
+
+### 2. 取镜像
+
+**A. 直接拉预构建镜像**（不需要克隆源码之外的任何东西）：
+
+```bash
+# .env
+APP_IMAGE=guiguisocute/edu-power-push:api
+WEB_IMAGE=guiguisocute/edu-power-push:web
+```
+
+```bash
+docker compose pull
+```
+
+两个组件共用**一个**公开仓库，用 tag 前缀区分：`api-*` 是三个 Go 二进制（api / worker / admin），`web-*` 是前端产物 + Caddy。带日期与 commit 的版本 tag 形如 `api-20260802-ac1465f`，`:api` / `:web` 是随最后一次推送移动的指针 —— 生产环境请钉版本 tag，别钉指针。
+
+**B. 自己构建**（改过代码，或不想用别人的镜像）：
+
+```bash
+# .env
+APP_IMAGE=edu-power-push:local
+WEB_IMAGE=edu-power-push-web:local
+```
+
+```bash
+docker compose build
+```
+
+推到自己的仓库：
+
+```bash
+rev="$(date -u +%Y%m%d)-$(git rev-parse --short HEAD)"
+docker tag edu-power-push:local     <你的账号>/edu-power-push:api-$rev
+docker tag edu-power-push-web:local <你的账号>/edu-power-push:web-$rev
+docker push <你的账号>/edu-power-push:api-$rev
+docker push <你的账号>/edu-power-push:web-$rev
+```
+
+推之前自己查一遍镜像里没有夹带凭据 —— 公开仓库的层任何人都能拉下来翻：
+
+```bash
+docker run --rm --entrypoint sh <镜像> -c \
+  'find / -xdev \( -path /proc -o -path /sys -o -path /etc/ssl \) -prune -o \
+     \( -name ".env" -o -name ".env.*" \) -print 2>/dev/null'
+```
+
+### 3. 建库、起服务
+
+```bash
+docker compose --profile tools run --rm admin migrate
+docker compose up -d db api worker web
+```
+
+迁移也会在 api / worker 启动时自动跑（PostgreSQL advisory lock 下串行），上面这条只是让你在起服务前先看到迁移结果。
+
+### 4. 确认起来了
+
+```bash
+curl -fsS http://127.0.0.1:8080/health/ready
+# {"database":"ready","migrations":"ready","status":"ready","version":"version_1","worker":"ready"}
+
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/
+# 200
+```
+
+`web` 容器同时把 `/api` 与 `/health` 反代给 `api`，所以前端与 API **同源**，refresh 的 HttpOnly cookie 不跨域。这是硬要求：把前端和 API 放到两个域名下，登录态会直接失效。
+
+### 5. 第一个管理员
+
+面板走账号角色，不是 `ADMIN_TOKEN`。所以先在站点上注册一个账号，再用 token 把它提成管理员：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/admin/users/promote \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","role":"admin"}'
+```
+
+之后所有运维操作都在站点侧栏的「系统管理」里做。`ADMIN_TOKEN` 只留给机器（CI、迁移、健康探测），**禁止**打进浏览器产物。
+
+### 6. 选学校
+
+到「系统管理 → 扫描器」，顶部选一所学校并保存，约 15 秒内 worker 热加载，不必重启。没选之前服务照常跑，只是采集器全部跳过 —— 面板与登录都可用。
+
+也可以在 `.env` 里填 `AREA_ID` / `AREA_NAME` 兜底；面板保存过之后以面板为准。
+
+### 7. 对外入口
+
+`api` 与 `web` **只绑宿主回环**，不要在防火墙或安全组里放开 8080 / 8081。对外由你自己的反向代理终止 TLS：
+
+```
+443 → /      → 127.0.0.1:8081   (web)
+443 → /api/* → 127.0.0.1:8080   (api)
+443 → /health/* → 127.0.0.1:8080
+```
+
+Nginx / Caddy / Traefik 都可以，仓库里不带任何一家的配置。要点只有三条：终止 TLS、前端与 API 同源、别把 8080 暴露出去。生产环境记得 `APP_ENV=production`（强制 `Secure` cookie）。
+
+更细的导入、分档扫描、环境隔离、备份与回滚见 [`backend/docs/DEPLOYMENT.md`](backend/docs/DEPLOYMENT.md)。
+
+### 冒烟自检
+
+```bash
+bash backend/scripts/smoke_docker.sh
+```
+
+从零起一套一次性环境：迁移 → 导入库存与快照 → 起 api/worker → 校验管理端点鉴权 → 用真实 SIGTERM 验证采集任务的检查点与续跑，跑完自动拆掉。上游指向不可路由地址，**不会**向任何真实学校系统发请求。
+
+账单生命周期那一段需要一个能返回月账单的上游，默认跳过；要连真实上游跑：
+
+```bash
+SMOKE_BILL_LIFECYCLE=1 AREA_ID=<你的> ELECTRICITY_BASE_URL=<你的> \
+  bash backend/scripts/smoke_docker.sh
+```
 
 ---
 
