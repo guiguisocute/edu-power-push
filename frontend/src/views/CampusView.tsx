@@ -15,6 +15,7 @@ import {
   availNote,
   currentMonthKey,
   currentMonthWindow,
+  densifyMonthDays,
   monthWindow,
   num,
   rangeWindow,
@@ -548,7 +549,22 @@ export default function CampusView() {
             provisional: null as boolean[] | null,
           }
         })()
-      : { ...seriesVals(lcs.data), axis: null as string[] | null, provisional: null as boolean[] | null }
+      : monthView
+        ? (() => {
+            /* 月视图铺满自然日。稀疏点直接 flex 会变成巨型柱。 */
+            const y = Number(s.cMonth.slice(0, 4))
+            const m0 = Number(s.cMonth.slice(5, 7)) - 1
+            const dense = densifyMonthDays(seriesVals(lcs.data), y, m0)
+            return {
+              vals: dense.vals.map((v, i) => (dense.has[i] ? v : null)) as (number | null)[],
+              labels: dense.labels,
+              meters: dense.meters,
+              at: dense.labels.map((_, i) => Date.UTC(y, m0, i + 1)),
+              axis: dense.labels as string[] | null,
+              provisional: null as boolean[] | null,
+            }
+          })()
+        : { ...seriesVals(lcs.data), axis: null as string[] | null, provisional: null as boolean[] | null }
   const liveCS = IS_LIVE
     ? (() => {
         const scale = sci.unit === 'MWh' ? 0.001 : 1
@@ -606,6 +622,7 @@ export default function CampusView() {
         const provisional = csFull.provisional
           ? csFull.provisional.slice(zoom[0], zoom[1] + 1)
           : vals.map(() => false)
+        const has = csFull.has ? csFull.has.slice(zoom[0], zoom[1] + 1) : null
         const n = vals.length
         return {
           n,
@@ -615,6 +632,7 @@ export default function CampusView() {
           vals,
           kwh: csFull.kwh.slice(zoom[0], zoom[1] + 1),
           meters: csFull.meters.slice(zoom[0], zoom[1] + 1),
+          has,
           provisional,
           ticks: [axisAt(0), axisAt(Math.floor((n - 1) / 2)), axisAt(n - 1)] as [string, string, string],
         }
@@ -661,23 +679,31 @@ export default function CampusView() {
     },
   )
   const cmax = Math.max(...cVals, 0.0001) * 1.14
-  /* 三态：默认最新柱 / 临时查看 hover / 钉住 pin。
+  /* 默认高亮最近有数日。铺满整月后禁止落到月末空槽上。 */
+  const lastPresent = (() => {
+    if (!cs.has) return cs.n - 1
+    for (let i = cs.n - 1; i >= 0; i--) if (cs.has[i]) return i
+    return cs.n - 1
+  })()
+  /* 三态：默认最新有数柱 / 临时查看 hover / 钉住 pin。
      钉住后读数与游标固定。触屏单击临时，双击钉住。 */
   const ci =
     s.cPin != null
       ? Math.min(s.cPin, cs.n - 1)
       : s.cHover != null
         ? Math.min(s.cHover, cs.n - 1)
-        : cs.n - 1
+        : lastPresent
   const cBars = cVals.map((v, i) => {
+    const present = !cs.has || cs.has[i] !== false
     const pinned = s.cPin === i
     const hovered = s.cHover === i
     const isProv = !!cs.provisional[i]
-    /* 钉住 = 实心红。临时查看 = 半透明红。默认最新柱高亮不描边。 */
+    /* 钉住 = 实心红。临时查看 = 半透明红。默认最新有数柱高亮不描边。 */
     const active =
-      s.cPin != null ? pinned : hovered || (s.cHover == null && i === cs.n - 1)
+      s.cPin != null ? pinned : hovered || (s.cHover == null && i === lastPresent)
     let bg: string
-    if (pinned) bg = 'var(--red)'
+    if (!present) bg = 'transparent'
+    else if (pinned) bg = 'var(--red)'
     else if (hovered) bg = `color-mix(in srgb, var(--red) ${dark ? 72 : 62}%, transparent)`
     else if (active) bg = 'var(--red)'
     else if (isProv)
@@ -685,7 +711,7 @@ export default function CampusView() {
       bg = `color-mix(in srgb, var(--red) ${dark ? 28 : 22}%, transparent)`
     else bg = `color-mix(in srgb, var(--fg) ${dark ? 34 : 28}%, transparent)`
     return {
-      h: ((v / cmax) * 100).toFixed(1) + '%',
+      h: present ? ((v / cmax) * 100).toFixed(1) + '%' : '0%',
       bg,
       pinned,
       peeked: hovered && !pinned,
@@ -867,7 +893,7 @@ export default function CampusView() {
       en,
       v: (pct > 0 ? '+' : '') + pct.toFixed(0),
       u: '%',
-      note: (pct > 0 ? '高于' : '低于') + scopeName + '户均',
+      note: '你的电表' + (pct > 0 ? '高于' : '低于') + scopeName + '户均',
       color: pct > 0 ? RED : OK,
       title:
         '你的房间 ' + span + ' 用了 ' + mp.v + ' ' + mp.u + '，' + scopeName + '户均 ' + ap.v + ' ' + ap.u,

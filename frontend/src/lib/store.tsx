@@ -176,7 +176,8 @@ export const initialState: AppState = {
   pZoom: null,
   cZoom: null,
   features: DEFAULT_FEATURES,
-  hoverDay: 29,
+  /* ≥99 表示无悬停意图，视图落到最近有数日。 */
+  hoverDay: 99,
   heat: null,
   cHover: null,
   cPin: null,
@@ -210,7 +211,14 @@ export const initialState: AppState = {
   codeSent: false,
   bldgScope: 'all',
   floorScope: 'all',
-  mKey: '2026-6',
+  /* live：默认当前自然月。mock：对齐演示日 2026-07-25（0 基月 = 6）。
+     mKey 格式 y-m（m 为 0 基），与 liveMonthKeys / monthKeys 一致。 */
+  mKey: IS_LIVE
+    ? (() => {
+        const d = new Date()
+        return d.getFullYear() + '-' + d.getMonth()
+      })()
+    : '2026-6',
   lowAlert: true,
   threshold: 10,
   schedule: true,

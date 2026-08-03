@@ -13,6 +13,7 @@ import {
   availNote,
   currentMonthKey,
   currentMonthWindow,
+  densifyMonthDays,
   monthWindow,
   num,
   rangeWindow,
@@ -70,7 +71,8 @@ export default function OverviewView() {
   const useBillYear = IS_LIVE && pRange === 'year' && !!meterNo
   /* ---- 账期窗口。与数据看板同一套控件与语义。
      年 = [pFrom, pTo] 月区间。月 = 选定自然月按日铺。
-     学期保持滚动 18 周或校历周。 */
+     这两档以前是「近 30 天 / 近 365 天」的滚动窗口，想看 3 月只能等它滚过去。
+     学期保持滚动 18 周或校历周：按周聚合，落到自然月上没有意义。 */
   const pFrom = s.pFrom
   const pTo = monthIndex(s.pTo) < monthIndex(s.pFrom) ? s.pFrom : s.pTo
   const pIncludesCur = monthIndex(pTo) >= monthIndex(currentMonthKey())
@@ -240,6 +242,30 @@ export default function OverviewView() {
   const liveSeriesBase =
     IS_LIVE && !useBillYear && !liveTermBase
       ? (() => {
+          /* 月视图：按自然日铺满整月。稀疏 API 点直接 flex 会变成巨型柱。 */
+          if (monthView) {
+            const y = Number(s.pMonth.slice(0, 4))
+            const m0 = Number(s.pMonth.slice(5, 7)) - 1
+            const mine = densifyMonthDays(lsv, y, m0)
+            const bldg = densifyMonthDays(lsvBldg, y, m0)
+            const dorm = bldg.vals.map((v, i) => {
+              if (!bldg.has[i]) return 0
+              const meters = bldg.meters[i] || 0
+              return meters > 0 ? v / meters : 0
+            })
+            const label = (i: number) => mine.labels[i] ?? '—'
+            const n = mine.n
+            return {
+              n,
+              unit: 'kWh',
+              vals: mine.vals,
+              has: mine.has,
+              dorm,
+              label,
+              ticks: [label(0), label(Math.floor((n - 1) / 2)), label(n - 1)] as [string, string, string],
+              note: availNote(ls.data?.availability, ls.data?.quality, ls.error),
+            }
+          }
           const n = Math.max(lsv.vals.length, 1)
           const vals = lsv.vals.length ? lsv.vals.map((v) => v ?? 0) : [0]
           const has = lsv.vals.length ? lsv.vals.map((v) => v != null) : [false]
@@ -279,15 +305,35 @@ export default function OverviewView() {
   const displayDorm = ps.dorm.map((v) => cv(v))
   const showDorm = !unbound && displayDorm.some((v) => v > 0)
   const kmax = Math.max(...displayVals, ...(showDorm ? displayDorm : [0]), 0.0001) * 1.12
-  const hi = Math.min(s.hoverDay, ps.n - 1)
+  /* 默认高亮最近有数日。铺满整月后禁止落到月末空槽。 */
+  const lastPresent = (() => {
+    if (!ps.has) return Math.max(ps.n - 1, 0)
+    for (let i = ps.n - 1; i >= 0; i--) if (ps.has[i]) return i
+    return Math.max(ps.n - 1, 0)
+  })()
+  const rawHi = Math.min(Math.max(0, s.hoverDay), Math.max(ps.n - 1, 0))
+  const hi = s.hoverDay >= 99 ? lastPresent : rawHi
   const hasHi = !ps.has || ps.has[hi] !== false
-  const bars30 = displayVals.map((v, i) => ({
-    h: ((v / kmax) * 100).toFixed(1) + '%',
-    bg: i === hi ? RED : `color-mix(in srgb, var(--fg) ${dark ? 22 : 18}%, transparent)`,
-    on: () => set({ hoverDay: i }),
-  }))
+  const bars30 = displayVals.map((v, i) => {
+    const present = !ps.has || ps.has[i] !== false
+    return {
+      // 无数日高度 0 留空。禁止把缺数画成满高矩形。
+      h: present ? ((v / kmax) * 100).toFixed(1) + '%' : '0%',
+      bg: !present
+        ? 'transparent'
+        : i === hi
+          ? RED
+          : `color-mix(in srgb, var(--fg) ${dark ? 22 : 18}%, transparent)`,
+      on: () => set({ hoverDay: i }),
+    }
+  })
+  /* 同楼线只连有数点。缺数不落 0，避免整段被拉到底。 */
   const dormPoly = displayDorm
-    .map((v, i) => (((i + 0.5) / ps.n) * 100).toFixed(2) + ',' + (100 - (v / kmax) * 100).toFixed(2))
+    .map((v, i) => {
+      if (!(v > 0)) return null
+      return (((i + 0.5) / ps.n) * 100).toFixed(2) + ',' + (100 - (v / kmax) * 100).toFixed(2)
+    })
+    .filter((p): p is string => p != null)
     .join(' ')
   const hv = ps.vals[hi]
   const ha = ps.dorm[hi]

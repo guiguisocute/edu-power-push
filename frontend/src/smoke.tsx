@@ -36,6 +36,7 @@ import { DEFAULT_FEATURES } from './config/features'
 import NotFound from './components/NotFound'
 import { runCaptchaGateTests } from './components/captchaGate.test'
 import { runCampusYearTests } from './lib/campusYear.test'
+import { runSeriesDenseTests } from './api/seriesDense.test'
 
 const noop = () => {}
 let failed = 0
@@ -147,6 +148,12 @@ try {
   ok('账期下拉覆盖全部有账单的月份')
 } catch (e) {
   fail('month keys · ' + (e as Error).message)
+}
+try {
+  runSeriesDenseTests()
+  ok('日序列铺满自然月：稀疏点不撑成巨型柱 · 上海日历对齐')
+} catch (e) {
+  fail('series densify · ' + (e as Error).message)
 }
 try {
   runMonthTests()

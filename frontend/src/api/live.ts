@@ -329,6 +329,17 @@ export function useLiveHeatmap(): LiveState<UnavailableCapability> {
   return useLiveFetch(IS_LIVE && ready, 'heatmap', () => api.hourlyHeatmap())
 }
 
+/** Asia/Shanghai 日历日 YYYY-MM-DD。与导出 bucketDate 同口径，避免 UTC 午夜拨日。 */
+export function seriesDayKey(periodStartMs: number): string {
+  if (!Number.isFinite(periodStartMs)) return ''
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(periodStartMs))
+}
+
 /** 时序转数值数组。null 保留为 null，禁止伪 0。
     meters 为每桶户均除数。at 为桶起点毫秒戳，折周按真实日期归属。 */
 export function seriesVals(ts: TimeSeries | null): {
@@ -344,13 +355,54 @@ export function seriesVals(ts: TimeSeries | null): {
     // 桶表数优先；否则窗口整体表数；再否则 0（不显示户均）。
     meters: ts.points.map((p) => p.meters ?? ts.scope_meters ?? 0),
     labels: ts.points.map((p) => {
-      const d = new Date(p.period_start)
+      const key = seriesDayKey(Date.parse(p.period_start))
+      if (!key) return '—'
+      const [yy, mm, dd] = key.split('-')
       // 月粒度带年份，避免跨年月份混淆。
-      return ts.granularity === 'month'
-        ? d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0')
-        : d.getMonth() + 1 + '/' + d.getDate()
+      return ts.granularity === 'month' ? yy + '/' + mm : Number(mm) + '/' + Number(dd)
     }),
   }
+}
+
+/**
+ * 把稀疏日序列铺满自然月。
+ * API 只返回有数的天；若直接 flex 柱，3 天会撑成 3 根巨型矩形。
+ * 缺数日 value=0、has=false，柱高为 0 留空；真 0 用电 has=true。
+ */
+export function densifyMonthDays(
+  sparse: { vals: (number | null)[]; meters: number[]; at: number[] },
+  year: number,
+  month0: number,
+): {
+  vals: number[]
+  has: boolean[]
+  meters: number[]
+  labels: string[]
+  n: number
+} {
+  const dim = new Date(year, month0 + 1, 0).getDate()
+  const byDay = new Map<string, { v: number | null; m: number }>()
+  for (let i = 0; i < sparse.at.length; i++) {
+    const key = seriesDayKey(sparse.at[i])
+    if (!key) continue
+    byDay.set(key, { v: sparse.vals[i] ?? null, m: sparse.meters[i] ?? 0 })
+  }
+  const vals: number[] = []
+  const has: boolean[] = []
+  const meters: number[] = []
+  const labels: string[] = []
+  const m1 = month0 + 1
+  for (let d = 1; d <= dim; d++) {
+    const key = year + '-' + String(m1).padStart(2, '0') + '-' + String(d).padStart(2, '0')
+    const hit = byDay.get(key)
+    const raw = hit?.v ?? null
+    const present = raw != null && Number.isFinite(raw)
+    vals.push(present ? (raw as number) : 0)
+    has.push(present)
+    meters.push(hit?.m ?? 0)
+    labels.push(m1 + '/' + d)
+  }
+  return { vals, has, meters, labels, n: dim }
 }
 
 /** 累加时序有值点。全无值返回 null，区别于真 0。 */
