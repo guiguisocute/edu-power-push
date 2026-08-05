@@ -47,7 +47,7 @@ import {
 import PushHistory, { type PushHistoryNotice } from '../components/PushHistory'
 import type { PushLog } from '../api/types'
 import { api } from '../api/client'
-import { useElementWidth } from '../lib/useSize'
+import { useElementWidth, useIsMobileViewport } from '../lib/useSize'
 
 const PUSH_PAGE_SIZE = 20
 
@@ -60,6 +60,7 @@ export default function OverviewView() {
   const { RMB, U, cv, nf, f2, alt } = fmt
   const usagePlotRef = useRef<HTMLElement>(null)
   const usagePlotW = useElementWidth(usagePlotRef)
+  const mobileChart = useIsMobileViewport()
   const k = daily()
   /* 已登录未绑表：概览不遮罩。数值显示 —。绑表入口在 hero 余额旁。 */
   const unbound = !!s.user && !s.user.meter
@@ -319,7 +320,9 @@ export default function OverviewView() {
   const hi = s.hoverDay >= 99 ? lastPresent : rawHi
   const hasHi = !ps.has || ps.has[hi] !== false
   const valueLabelStep = usagePlotW > 0 ? Math.max(1, Math.ceil((ps.n * 31) / usagePlotW)) : 1
-  const showValueLabel = (i: number) => i === hi || i % valueLabelStep === 0
+  const hasPickedBar = s.hoverDay >= 0 && s.hoverDay < 99
+  const showValueLabel = (i: number) =>
+    mobileChart ? hasPickedBar && i === hi : i === hi || i % valueLabelStep === 0
   const bars30 = displayVals.map((v, i) => {
     const present = !ps.has || ps.has[i] !== false
     return {
@@ -333,7 +336,10 @@ export default function OverviewView() {
       label: nf(v),
       showLabel: present && showValueLabel(i),
       active: i === hi,
-      on: () => set({ hoverDay: i }),
+      onEnter: () => {
+        if (!mobileChart) set({ hoverDay: i })
+      },
+      onPick: () => set({ hoverDay: i }),
     }
   })
   /* 同楼线只连有数点。缺数不落 0，避免整段被拉到底。 */
@@ -677,6 +683,7 @@ export default function OverviewView() {
                 <span style={{ fontSize: '11.5px', color: 'var(--fg2)' }}>同楼平均</span>
               </div>
             )}
+            <span className="chart-tap-hint">轻触柱形查看数值</span>
             <SegGroup>
               {pRangeDefs.map((r) => (
                 <SegBtn
@@ -763,7 +770,9 @@ export default function OverviewView() {
         <div
           key={pRange + '-' + s.unit + '-' + rf.epoch}
           className="chart-anim"
-          onMouseLeave={() => set({ hoverDay: 99 })}
+          onMouseLeave={() => {
+            if (!mobileChart) set({ hoverDay: 99 })
+          }}
           style={{
             position: 'relative',
             height: '224px',
@@ -777,7 +786,8 @@ export default function OverviewView() {
             {bars30.map((b, i) => (
               <div
                 key={i}
-                onMouseEnter={b.on}
+                onMouseEnter={b.onEnter}
+                onClick={b.onPick}
                 style={{
                   position: 'relative',
                   flex: 1,

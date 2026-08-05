@@ -405,9 +405,7 @@ export default function UsageView() {
   const mTickB = m + 1 + '/' + Math.round(dim / 2)
   const mTickC = days.length ? m + 1 + '/' + days[days.length - 1].d : m + 1 + '/' + dim
 
-  /* 用电分析报告：对比本表与同层/同栋/全校。
-     结论仅来自数据差额。禁止写电器用法指引。
-     结论必须指回具体数字。 */
+  /* 用电分析报告：对比本表与同层/同栋/全校。 */
   const myB = (IS_LIVE && s.user?.building) || ''
   const myF = (IS_LIVE && s.user?.floor) || ''
   const anOn = IS_LIVE && !!liveMeter && !!myB
@@ -495,84 +493,6 @@ export default function UsageView() {
 
     const low = days.reduce((a, x) => (x.kwh < a.kwh ? x : a), days[0])
 
-    /* ---- 结论：一条一句，只报数与差额。 */
-    type Tip = { tone: 'warn' | 'ok' | 'info'; text: string }
-    const tips: Tip[] = []
-    const ref: { name: string; v: number }[] = []
-    if (ok(floorAvg)) ref.push({ name: '同层', v: floorAvg })
-    if (ok(bldgAvg)) ref.push({ name: '同栋', v: bldgAvg })
-    if (ok(allAvg)) ref.push({ name: '全校', v: allAvg })
-
-    const base = ok(floorAvg) ? { name: '同层', v: floorAvg } : ref[0]
-    if (base) {
-      const gap = ((myDaily - base.v) / base.v) * 100
-      if (gap > 10) {
-        const cut = myDaily - base.v
-        tips.push({
-          tone: 'warn',
-          text: `比${base.name}户均高 ${gap.toFixed(0)}% · 日均 ${f2(myDaily)} / ${f2(base.v)} ${U} · 追平需每天少 ${f2(cut)}`,
-        })
-      } else if (gap < -10) {
-        tips.push({
-          tone: 'ok',
-          text: `比${base.name}户均低 ${Math.abs(gap).toFixed(0)}% · 日均 ${f2(myDaily)} / ${f2(base.v)} ${U}`,
-        })
-      } else {
-        tips.push({
-          tone: 'info',
-          text: `与${base.name}户均持平 · ${gap > 0 ? '+' : ''}${gap.toFixed(0)}%`,
-        })
-      }
-    }
-    if (ref.length >= 2) {
-      const above = ref.filter((r) => myDaily > r.v)
-      if (above.length === ref.length)
-        tips.push({ tone: 'warn', text: `${ref.map((r) => r.name).join('、')}均高于户均` })
-      else if (above.length === 0)
-        tips.push({ tone: 'ok', text: `${ref.map((r) => r.name).join('、')}均低于户均` })
-      else
-        tips.push({
-          tone: 'info',
-          text: `高于${above.map((r) => r.name).join('、')}户均，低于${ref.filter((r) => myDaily <= r.v).map((r) => r.name).join('、')}户均`,
-        })
-    }
-    if (myWkGap != null && bWkGap != null && Math.abs(myWkGap - bWkGap) > 15) {
-      tips.push({
-        tone: myWkGap > bWkGap ? 'info' : 'ok',
-        text:
-          `周末比工作日${myWkGap > 0 ? '高' : '低'} ${Math.abs(myWkGap).toFixed(0)}%，` +
-          `同栋${bWkGap > 0 ? '高' : '低'} ${Math.abs(bWkGap).toFixed(0)}%`,
-      })
-    }
-    if (peak && dAvg > 0 && peak.kwh > dAvg * 1.8) {
-      const sameDay = bldgPts.find((p) => new Date(p.period_start).getDate() === peak.d)
-      const bMeters = anBldgSum.data?.meters ?? 0
-      const bSame = sameDay && bMeters > 0 ? parseFloat(sameDay.value!) / bMeters : null
-      tips.push({
-        tone: 'info',
-        text:
-          `${m + 1}/${peak.d} 最高 ${f2(peak.kwh)} ${U} · 日均的 ${(peak.kwh / dAvg).toFixed(1)} 倍` +
-          (bSame != null ? ` · 同栋当天户均 ${f2(bSame)}` : ''),
-      })
-    }
-    if (trendGap != null && Math.abs(trendGap) > 15) {
-      tips.push({
-        tone: trendGap > 0 ? 'warn' : 'ok',
-        text: `近 7 天日均 ${f2(l7!)} ${U} · 较前 7 天${trendGap > 0 ? '涨' : '降'} ${Math.abs(trendGap).toFixed(0)}%`,
-      })
-    }
-    /* 余额可撑天数 = 当前余额 ÷ 当前日均电费。全部来自实测。 */
-    const curBal = bal.length ? bal[bal.length - 1] : null
-    if (curBal != null && myDaily > 0) {
-      const daysLeft = Math.floor(curBal / (myDaily * elecRate))
-      tips.push({
-        tone: daysLeft <= 7 ? 'warn' : 'info',
-        text: `余额 ${curBal.toFixed(2)} 元 · 按当月日均约够 ${daysLeft} 天`,
-      })
-    }
-    if (myDays < 5)
-      tips.push({ tone: 'info', text: `仅 ${myDays} 天有抄表数据 · 样本偏少` })
-
     const bars = [
       { name: '我', v: myDaily, me: true },
       ...(ok(floorAvg) ? [{ name: '同层户均', v: floorAvg, me: false }] : []),
@@ -594,7 +514,6 @@ export default function UsageView() {
       l7,
       p7,
       trendGap,
-      tips,
       place: [myB, myF].filter(Boolean).join(' · '),
       quality: anBldgSum.data?.quality,
       err: anFloorSum.error || anBldgSum.error || anAllSum.error,
@@ -1304,7 +1223,7 @@ export default function UsageView() {
         {IS_LIVE && <LiveNote text={availNote(lBal.data?.availability, lBal.data?.quality, lBal.error)} />}
       </section>
 
-      {/* ---- 用电分析报告。对比同层/同栋/全校。结论仅来自数据差额。 */}
+      {/* ---- 用电分析报告。对比同层/同栋/全校。 */}
       {IS_LIVE && anReport && (
         <section style={{ padding: '44px 0 46px', borderBottom: '1px solid var(--line)' }}>
           <div data-r="hdr" style={{ display: 'flex', alignItems: 'flex-end', gap: '20px', flexWrap: 'wrap' }}>
@@ -1489,47 +1408,8 @@ export default function UsageView() {
                   })()}
                   <div style={{ fontSize: '11.5px', color: 'var(--fg3)', marginTop: '12px', lineHeight: 1.7, textWrap: 'pretty' }}>
                     户均 = 范围合计 ÷ 当期有数的表数 ÷ 天数；空置房间也在分母里。
+                    {anReport.err ? ' · 对照数据取数失败：' + anReport.err : ''}
                   </div>
-                </div>
-              </div>
-
-              {/* 结论。每条必须指回具体数字。 */}
-              <div style={{ marginTop: '34px', paddingTop: '26px', borderTop: '1px solid var(--line)' }}>
-                <div
-                  style={{
-                    font: "500 9px/1 'JetBrains Mono',monospace",
-                    letterSpacing: '.18em',
-                    color: 'var(--fg3)',
-                    marginBottom: '16px',
-                  }}
-                >
-                  FINDINGS · 结论
-                </div>
-                {anReport.tips.length === 0 ? (
-                  <div style={{ fontSize: '13px', color: 'var(--fg3)' }}>该账期无明显差异。</div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {anReport.tips.map((t, i) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
-                        <span
-                          style={{
-                            width: '5px',
-                            height: '5px',
-                            flex: 'none',
-                            marginTop: '8px',
-                            background: t.tone === 'warn' ? RED : t.tone === 'ok' ? OK : 'var(--fg3)',
-                          }}
-                        />
-                        <span style={{ fontSize: '13.5px', lineHeight: 1.75, color: 'var(--fg)', textWrap: 'pretty' }}>
-                          {t.text}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div style={{ fontSize: '11.5px', color: 'var(--fg3)', marginTop: '18px', lineHeight: 1.7, textWrap: 'pretty' }}>
-                  均由你的抄表数与同层 / 同栋 / 全校聚合值算出。
-                  {anReport.err ? ' · 对照数据取数失败：' + anReport.err : ''}
                 </div>
               </div>
             </>

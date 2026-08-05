@@ -36,3 +36,20 @@ export function useIsCoarsePointer(): boolean {
   }, [])
   return coarse
 }
+
+/** 与全站移动布局断点保持一致。移动图表改用点选，避免悬浮信息常驻。 */
+export function useIsMobileViewport(): boolean {
+  const query = '(max-width: 960px)'
+  const [mobile, setMobile] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(query).matches : false,
+  )
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia(query)
+    const sync = () => setMobile(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
+  return mobile
+}

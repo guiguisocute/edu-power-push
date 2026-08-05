@@ -4,7 +4,7 @@
 
 import { useEffect, useRef } from 'react'
 import { useStore } from '../lib/store'
-import { useElementWidth, useIsCoarsePointer } from '../lib/useSize'
+import { useElementWidth, useIsCoarsePointer, useIsMobileViewport } from '../lib/useSize'
 import { formatKwhInUnit, makeFmt, themeColors, seg, type ConsumptionDisplayUnit } from '../lib/format'
 import { campusSeries, buildings, daily, dorm, rnd, T_LABEL, type CRange, type Building } from '../lib/mock'
 import { SegGroup, SegBtn } from '../components/ui'
@@ -394,6 +394,7 @@ export default function CampusView() {
   const mainPlotRef = useRef<HTMLDivElement>(null)
   const mainPlotW = useElementWidth(mainPlotRef)
   const coarse = useIsCoarsePointer()
+  const mobileChart = useIsMobileViewport()
   /* 触屏：单击临时查看。短时再点同一柱钉住/取消。桌面单击钉住。 */
   const barTapRef = useRef<{ i: number; t: number }>({ i: -1, t: 0 })
   /* 触屏走势：区分点开浮窗与横向扫时间。 */
@@ -721,10 +722,12 @@ export default function CampusView() {
       peeked: hovered && !pinned,
       provisional: isProv,
       label: cpair(v).v,
-      showLabel: present && (i === ci || i % cValueLabelStep === 0),
+      showLabel:
+        present &&
+        (mobileChart ? s.cHover === i || s.cPin === i : i === ci || i % cValueLabelStep === 0),
       active,
       onEnter: () => {
-        if (!coarse) set({ cHover: i })
+        if (!coarse && !mobileChart) set({ cHover: i })
       },
     }
   })
@@ -1438,14 +1441,30 @@ export default function CampusView() {
     if (!any) return null
     return PC ? (meters > 0 ? sum / meters : null) : sum
   }
-  /* 刻度疏密按实测宽度。折线标签绝对定位，挤了会压字。 */
-  const trendLabelStep = (() => {
-    const per = trendUseM || !PC ? 48 : 44 // 一个 25/07 加空隙
-    const room = Math.max(2, Math.floor((trendW || 720) / per))
-    return trendN <= room ? 1 : Math.ceil(trendN / room)
+  /* 横轴按首尾等距取样。旧的「固定步长 + 强插末项」会让最后两项贴在一起；
+     手机游走时也不再临时插入标签，避免横轴随手指跳动。 */
+  const trendTickWidth = Math.max(
+    56,
+    ...hmBuckets.map((b, i) => hmTick(b, i).length * 6.2 + 14),
+  )
+  const trendTickRoom = Math.min(
+    trendN,
+    Math.max(2, Math.floor((trendW || (mobileChart ? 320 : 720)) / trendTickWidth)),
+  )
+  const trendTickIndices = (() => {
+    const out = new Set<number>()
+    if (trendN <= 0) return out
+    if (trendN === 1 || trendTickRoom === 1) {
+      out.add(0)
+      return out
+    }
+    for (let slot = 0; slot < trendTickRoom; slot++) {
+      out.add(Math.round((slot * (trendN - 1)) / (trendTickRoom - 1)))
+    }
+    return out
   })()
   const trendShowLabel = (i: number) =>
-    i === 0 || i === trendN - 1 || i % trendLabelStep === 0 || (s.cTrendCol != null && i === trendCol)
+    trendTickIndices.has(i) || (!mobileChart && s.cTrendCol != null && i === trendCol)
   const trendUnitWord = mixLabel === '楼层' ? '层' : '栋'
   const trendFocusV = trendFocus ? trendFocus.pts[trendCol] : null
   /* 右上角读数细节：环比、列内排名、备选换算。 */
@@ -1563,6 +1582,7 @@ export default function CampusView() {
                 重置缩放 ✕
               </button>
             )}
+            <span className="chart-tap-hint">轻触柱形查看数值</span>
             <SegGroup>
               {rangeDefs.map((r) => (
                 <SegBtn
@@ -1737,7 +1757,7 @@ export default function CampusView() {
               }
               className="chart-anim"
               onMouseLeave={() => {
-                if (!coarse) set({ cHover: null })
+                if (!coarse && !mobileChart) set({ cHover: null })
               }}
               /* 年视图里双击 = 钻进那个月的日视图；其它周期沿用「双击复位」。
                  年视图要复位缩放有右上角的「重置缩放 ✕」，不缺入口。 */

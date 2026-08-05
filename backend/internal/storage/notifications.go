@@ -179,7 +179,8 @@ func defaultNotificationSettings() NotificationSettings {
 	return NotificationSettings{
 		LowBalanceAlert: true,
 		ThresholdYuan:   "10",
-		ScheduledDigest: true,
+		// 新号默认关闭定时摘要。用户自行打开后再发。
+		ScheduledDigest: false,
 		Period:          "daily",
 		PushTime:        "08:00",
 		Timezone:        "Asia/Shanghai",
@@ -674,7 +675,7 @@ func ListPushLogs(ctx context.Context, pool *pgxpool.Pool, userID string, limit,
 
 // ReserveChannelTest 以单条条件 UPDATE 抢占测试额度。
 // 禁止两并发请求在 SELECT 后同时打上游。
-// 抢占成功后，即使上游失败也计入冷却。防止重试风暴。
+// 抢占成功后，即使上游失败也计入 60 秒冷却。防止错误凭据或网络故障形成重试风暴。
 func ReserveChannelTest(ctx context.Context, pool *pgxpool.Pool, userID, channel string) (time.Duration, error) {
 	var reservedAt time.Time
 	err := pool.QueryRow(ctx, `
@@ -1177,7 +1178,7 @@ func ListPushCandidates(ctx context.Context, pool *pgxpool.Pool, box *secrets.Bo
 			),
 			COALESCE(s.low_balance_alert, true),
 			COALESCE(s.threshold_yuan, 10)::text,
-			COALESCE(s.scheduled_digest, true),
+			COALESCE(s.scheduled_digest, false),
 			COALESCE(s.period, 'daily'),
 			COALESCE(s.push_time, '08:00'),
 			COALESCE(s.timezone, 'Asia/Shanghai'),

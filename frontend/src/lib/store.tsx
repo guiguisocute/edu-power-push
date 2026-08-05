@@ -221,7 +221,8 @@ export const initialState: AppState = {
     : '2026-6',
   lowAlert: true,
   threshold: 10,
-  schedule: true,
+  // 新号默认关闭定时摘要。用户自行打开。
+  schedule: false,
   period: 'daily',
   pushTime: '08:00',
   notificationTemplates: defaultNotificationTemplates(),
@@ -744,7 +745,7 @@ export function useCreateStore(initialView?: View): Store {
     const settings: LocalNotifSettings = {
       lowAlert: true,
       threshold: 10,
-      schedule: true,
+      schedule: false,
       period: 'daily',
       pushTime: '08:00',
       notificationTemplates: defaultNotificationTemplates(),
