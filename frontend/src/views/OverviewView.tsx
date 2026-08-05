@@ -344,14 +344,31 @@ export default function OverviewView() {
     })
     .filter((p): p is string => p != null)
     .join(' ')
-  const dormPoints = displayDorm.map((v, i) => ({
-    value: v,
-    present: v > 0,
-    x: ((i + 0.5) / ps.n) * 100,
-    y: 100 - (v / kmax) * 100,
-    showLabel: v > 0 && showValueLabel(i),
-    active: i === hi,
-  }))
+  const chartHeight = 224
+  const dormPoints = displayDorm.map((v, i) => {
+    const y = 100 - (v / kmax) * 100
+    const lineY = (y / 100) * chartHeight
+    const barY = chartHeight - (displayVals[i] / kmax) * chartHeight
+    /* 柱值固定在柱顶。两类标签进入同一垂直空间时，把折线值翻到点下方。 */
+    const barLabelCenter = barY - 11.5
+    const aboveLabelCenter = lineY - 11.5
+    const belowLabelCenter = lineY + 11.5
+    const aboveClearance = Math.abs(aboveLabelCenter - barLabelCenter)
+    const belowClearance = Math.abs(belowLabelCenter - barLabelCenter)
+    const labelBelow =
+      lineY < 22 ||
+      (lineY < chartHeight - 22 && bars30[i].showLabel && aboveClearance < 18 && belowClearance > aboveClearance)
+
+    return {
+      value: v,
+      present: v > 0,
+      x: ((i + 0.5) / ps.n) * 100,
+      y,
+      showLabel: v > 0 && showValueLabel(i),
+      labelBelow,
+      active: i === hi,
+    }
+  })
   const hv = ps.vals[hi]
   const ha = ps.dorm[hi]
   const hd = ha > 0 ? ((hv - ha) / ha) * 100 : 0
@@ -844,10 +861,10 @@ export default function OverviewView() {
                         style={{
                           position: 'absolute',
                           left: '50%',
-                          bottom: '8px',
+                          ...(point.labelBelow ? { top: '8px' } : { bottom: '8px' }),
                           transform: 'translateX(-50%)',
                           padding: '2px 3px',
-                          background: 'color-mix(in srgb, var(--bg) 92%, transparent)',
+                          background: 'color-mix(in srgb, var(--bg) 94%, transparent)',
                           color: 'var(--red)',
                           font: "500 9px/1 'JetBrains Mono',monospace",
                           fontVariantNumeric: 'tabular-nums',
