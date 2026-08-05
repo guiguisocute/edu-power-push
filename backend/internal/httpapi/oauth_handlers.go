@@ -157,18 +157,13 @@ func (s *Server) completeOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := authn.NewID()
-	_, refresh, session, err := s.newTokenSet(userID, "", r.UserAgent())
-	if err != nil {
-		s.redirectOAuthError(w, r, next, "unavailable", err)
-		return
-	}
 	outcome, err := storage.LinkOrCreateOAuthUser(r.Context(), s.pool, storage.OAuthProfile{
 		Provider:      profile.Provider,
 		Subject:       profile.Subject,
 		Email:         profile.Email,
 		EmailVerified: profile.EmailVerified,
 		Nickname:      oauthNickname(profile),
-	}, userID, registrationEnabled, session)
+	}, userID, registrationEnabled)
 	switch {
 	case errors.Is(err, storage.ErrOAuthEmailUnverified):
 		s.redirectOAuthError(w, r, next, "email_unverified", err)
@@ -190,6 +185,18 @@ func (s *Server) completeOAuth(w http.ResponseWriter, r *http.Request) {
 		s.redirectOAuthError(w, r, next, "account_disabled", errors.New("account is disabled"))
 		return
 	}
+	// 必须等身份查找结束后再签发会话。首次注册时 outcome.User.ID 等于
+	// 上面的候选 userID；再次登录或关联已有账号时则不同。若提前用候选 ID
+	// 签发，refresh session 会引用不存在的用户并触发外键错误。
+	refresh, session, err := s.newOAuthSession(outcome, r.UserAgent())
+	if err != nil {
+		s.redirectOAuthError(w, r, next, "unavailable", err)
+		return
+	}
+	if err := storage.CreateRefreshSession(r.Context(), s.pool, session); err != nil {
+		s.redirectOAuthError(w, r, next, "unavailable", err)
+		return
+	}
 	s.setRefreshCookie(w, refresh)
 	s.logger.Info("oauth login",
 		"request_id", r.Context().Value(requestIDKey),
@@ -207,6 +214,13 @@ func (s *Server) completeOAuth(w http.ResponseWriter, r *http.Request) {
 		result = "linked"
 	}
 	s.redirectOAuthResult(w, r, next, url.Values{"oauth": {provider}, "oauth_result": {result}})
+}
+
+// newOAuthSession 只接受已经解析完成的登录结果，确保 JWT subject、
+// refresh session 外键与实际登录账号始终是同一个 ID。
+func (s *Server) newOAuthSession(outcome storage.OAuthLoginOutcome, userAgent string) (string, storage.RefreshSession, error) {
+	_, refresh, session, err := s.newTokenSet(outcome.User.ID, "", userAgent)
+	return refresh, session, err
 }
 
 // oauthNickname 返回落库展示名。提供方无名字时使用邮箱本地部分。

@@ -45,7 +45,7 @@ type OAuthLoginOutcome struct {
 }
 
 /*
-LinkOrCreateOAuthUser 将第三方登录落成本站会话。
+LinkOrCreateOAuthUser 将第三方身份解析为本站账号。
  1. 身份已存在：直接登录。更新邮箱线索与登录时间。
  2. 新身份且已验证邮箱匹配已有账号：绑定。
  3. 身份与邮箱均新：建账号。密码列留空。
@@ -57,7 +57,6 @@ func LinkOrCreateOAuthUser(
 	profile OAuthProfile,
 	newUserID string,
 	registrationEnabled bool,
-	session RefreshSession,
 ) (OAuthLoginOutcome, error) {
 	var outcome OAuthLoginOutcome
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -93,13 +92,10 @@ func LinkOrCreateOAuthUser(
 			return err
 		}
 		outcome.User = user
-		// 停用账号不建会话。接口层返回账号不可用。
+		// 停用账号交给接口层拒绝，不会继续签发会话。
 		// 先插身份再检查：绑定关系真实。启用后可直接登录。
 		if user.Status != "active" {
 			return nil
-		}
-		if err := insertRefreshSession(ctx, tx, session); err != nil {
-			return err
 		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE user_accounts SET last_login_at=now(),updated_at=now() WHERE id=$1::uuid`, userID,
