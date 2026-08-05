@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/edu-power-push/edu-power-push/backend/internal/secrets"
 	"github.com/edu-power-push/edu-power-push/backend/internal/storage"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
