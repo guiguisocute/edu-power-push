@@ -290,32 +290,68 @@ func (s *Service) Verify(ctx context.Context, effective Effective, action string
 }
 
 func (s *Service) verifyTurnstile(ctx context.Context, effective Effective, action string, meta RequestMeta) (Result, error) {
-	result := Result{Provider: ProviderTurnstile, Available: true}
 	// 密钥/站点键没配齐：直接放行。Enabled() 通常已短路，这里再兜一层。
 	if !TurnstileReady(effective) {
 		return passOpen(ProviderTurnstile, []string{"not_configured"})
 	}
-	if strings.TrimSpace(meta.Token) == "" {
-		return result, ErrRequired
+	token := strings.TrimSpace(meta.Token)
+	if token == "" {
+		// 无 token 一律 fail-open。
+		// 场景：widget 红字「无法连接到网站」、site_key 域名不对、脚本被拦——
+		// 前端只能空 token 提交；若这里再 captcha_required，就是「已跳过」却登不进。
+		// 有 token 时仍走严格 siteverify（伪造/过期拒绝；密钥错误放行）。
+		// 代价：机器人可不交 token 绕过。修好 Turnstile 后请在面板确认配置或临时关闭。
+		return passOpen(ProviderTurnstile, []string{"missing_token_fail_open"})
 	}
-	form := url.Values{"secret": {effective.TurnstileSecret}, "response": {strings.TrimSpace(meta.Token)}}
-	if meta.RemoteIP != "" {
-		form.Set("remoteip", meta.RemoteIP)
+	return s.siteverify(ctx, effective, action, token, meta.RemoteIP)
+}
+
+func (s *Service) siteverify(ctx context.Context, effective Effective, action, token, remoteIP string) (Result, error) {
+	result, err := s.siteverifyRaw(ctx, effective.TurnstileSecret, token, remoteIP)
+	if err != nil {
+		return passOpen(ProviderTurnstile, []string{"upstream_unreachable"})
+	}
+	if !result.success {
+		// 密钥填错：放行。令牌伪造/过期：拒绝。
+		if turnstileCredentialBroken(result.ErrorCodes) {
+			return passOpen(ProviderTurnstile, result.ErrorCodes)
+		}
+		return Result{Provider: ProviderTurnstile, Available: true, ErrorCodes: result.ErrorCodes}, ErrInvalid
+	}
+	if result.Action != "" && result.Action != TurnstileAction(action) {
+		return Result{Provider: ProviderTurnstile, Available: true, ErrorCodes: result.ErrorCodes}, ErrInvalid
+	}
+	if effective.Settings.Hostname != "" && !strings.EqualFold(result.Hostname, effective.Settings.Hostname) {
+		return Result{Provider: ProviderTurnstile, Available: true, ErrorCodes: result.ErrorCodes}, ErrInvalid
+	}
+	return Result{Provider: ProviderTurnstile, Passed: true, Available: true, ErrorCodes: result.ErrorCodes}, nil
+}
+
+type siteverifyPayload struct {
+	success    bool
+	Hostname   string
+	Action     string
+	ErrorCodes []string
+}
+
+func (s *Service) siteverifyRaw(ctx context.Context, secret, token, remoteIP string) (siteverifyPayload, error) {
+	form := url.Values{"secret": {secret}, "response": {token}}
+	if remoteIP != "" {
+		form.Set("remoteip", remoteIP)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.TurnstileVerifyURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return passOpen(ProviderTurnstile, []string{"request_build_failed"})
+		return siteverifyPayload{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response, err := s.client.Do(req)
 	if err != nil {
-		// 上游不可达：放行，避免验证服务挂了整站登不进。
-		return passOpen(ProviderTurnstile, []string{"upstream_unreachable"})
+		return siteverifyPayload{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return passOpen(ProviderTurnstile, []string{fmt.Sprintf("http_%d", response.StatusCode)})
+		return siteverifyPayload{}, fmt.Errorf("turnstile returned HTTP %d", response.StatusCode)
 	}
 	var payload struct {
 		Success    bool     `json:"success"`
@@ -324,23 +360,12 @@ func (s *Service) verifyTurnstile(ctx context.Context, effective Effective, acti
 		ErrorCodes []string `json:"error-codes"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&payload); err != nil {
-		return passOpen(ProviderTurnstile, []string{"decode_failed"})
+		return siteverifyPayload{}, err
 	}
-	result.ErrorCodes = payload.ErrorCodes
-	if !payload.Success {
-		// 密钥填错时 Cloudflare 返回 invalid-input-secret 等；放行以免锁管理员。
-		// 令牌伪造/过期仍走 ErrInvalid，captcha 仍有拦截作用。
-		if turnstileCredentialBroken(payload.ErrorCodes) {
-			return passOpen(ProviderTurnstile, payload.ErrorCodes)
-		}
-		return result, ErrInvalid
-	}
-	if payload.Action != "" && payload.Action != TurnstileAction(action) {
-		return result, ErrInvalid
-	}
-	if effective.Settings.Hostname != "" && !strings.EqualFold(payload.Hostname, effective.Settings.Hostname) {
-		return result, ErrInvalid
-	}
-	result.Passed = true
-	return result, nil
+	return siteverifyPayload{
+		success:    payload.Success,
+		Hostname:   payload.Hostname,
+		Action:     payload.Action,
+		ErrorCodes: payload.ErrorCodes,
+	}, nil
 }

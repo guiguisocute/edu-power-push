@@ -137,14 +137,17 @@ export function TurnstileWidget({
     }
   }, [resetKey])
 
+  // 失败时藏掉 CF 红框，只留一句「已跳过」——别一边跳过一边还杵着故障卡片。
+  if (failed) {
+    return (
+      <div style={{ fontSize: '12.5px', color: 'var(--fg3)', lineHeight: 1.5 }}>
+        人机验证暂不可用，已跳过，可直接登录
+      </div>
+    )
+  }
   return (
     <div style={{ minHeight: '65px', display: 'flex', alignItems: 'center' }}>
       <div ref={host} />
-      {failed && (
-        <span style={{ fontSize: '12px', color: 'var(--fg3)' }}>
-          人机验证暂不可用，已跳过
-        </span>
-      )}
     </div>
   )
 }
@@ -189,25 +192,30 @@ export default function CaptchaGate({
     config.provider !== 'disabled' &&
     !!config.site_key?.trim() &&
     config.actions.includes(action)
-  const required = configured && !bypassed
-
   useEffect(() => {
     setToken('')
+    // 仅换 action / 配置时清 bypass。resetKey（提交后重置 widget）不要清掉 bypass，
+    // 否则「已跳过」刚生效又被打回 required，登录继续 captcha_required。
     setBypassed(false)
-    // resetKey 在令牌消费后故意清空 token。
-  }, [action, config?.provider, config?.site_key, configured, resetKey])
+  }, [action, config?.provider, config?.site_key, configured])
+
+  useEffect(() => {
+    // 提交后只清 token；bypass 保持。
+    setToken('')
+  }, [resetKey])
 
   useEffect(() => {
     if (!config) return
-    // bypass 后 ready=true 且 token 空：后端对缺凭证场景也会放行。
-    const ready = !required || token !== '' || bypassed
+    // bypass：required=false、ready=true、token 空。后端无 token 也会 fail-open。
+    const enforced = configured && !bypassed
+    const ready = !enforced || token !== ''
     onChangeRef.current({
-      required: required && !bypassed,
+      required: enforced,
       ready,
       token: bypassed ? '' : token,
       provider: bypassed ? 'disabled' : config.provider,
     })
-  }, [config, required, token, bypassed])
+  }, [config, configured, token, bypassed])
 
   if (!config || !configured) return null
   return (

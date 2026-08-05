@@ -35,7 +35,20 @@ func TestTurnstileVerification(t *testing.T) {
 	}
 }
 
-func TestTurnstileRejectsMissingAndMismatchedTokens(t *testing.T) {
+func TestTurnstileFailsOpenWhenTokenMissing(t *testing.T) {
+	// 无 token：fail-open（widget 挂掉时的唯一出路）。
+	service := New(Config{
+		Fallback:        Settings{Provider: ProviderTurnstile, SiteKey: "site", Actions: []string{ActionLogin}},
+		TurnstileSecret: "secret", TurnstileVerifyURL: "http://127.0.0.1:1/siteverify",
+	}, nil, nil)
+	effective, _ := service.Effective(context.Background())
+	result, err := service.Verify(context.Background(), effective, ActionLogin, RequestMeta{})
+	if err != nil || !result.Passed || result.Available {
+		t.Fatalf("missing token should fail-open = %#v, %v", result, err)
+	}
+}
+
+func TestTurnstileRejectsMismatchedAction(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"success":true,"hostname":"test.example","action":"wrong.action"}`))
 	}))
@@ -45,9 +58,6 @@ func TestTurnstileRejectsMissingAndMismatchedTokens(t *testing.T) {
 		TurnstileSecret: "secret", TurnstileVerifyURL: server.URL,
 	}, nil, nil)
 	effective, _ := service.Effective(context.Background())
-	if _, err := service.Verify(context.Background(), effective, ActionLogin, RequestMeta{}); !errors.Is(err, ErrRequired) {
-		t.Fatalf("missing token error = %v", err)
-	}
 	if _, err := service.Verify(context.Background(), effective, ActionLogin, RequestMeta{Token: "token"}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("action mismatch error = %v", err)
 	}

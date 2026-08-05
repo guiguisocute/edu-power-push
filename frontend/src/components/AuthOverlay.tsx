@@ -74,7 +74,8 @@ export default function AuthOverlay() {
   }
 
   const requireCaptchaReady = () => {
-    if (captchaState.ready) return true
+    // 未要求 captcha（disabled / widget 已 bypass）时直接过。
+    if (!captchaState.required || captchaState.ready) return true
     set({ authErr: '请先完成人机验证' })
     return false
   }

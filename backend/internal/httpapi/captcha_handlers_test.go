@@ -11,7 +11,8 @@ import (
 	"github.com/edu-power-push/edu-power-push/backend/internal/config"
 )
 
-func TestLoginFailsClosedWhenCaptchaTokenIsMissing(t *testing.T) {
+func TestLoginFailsOpenWhenCaptchaTokenIsMissing(t *testing.T) {
+	// widget 挂掉时前端只能空 token 提交。禁止再回 captcha_required 把人锁死。
 	cfg := testAuthConfig()
 	cfg.Captcha = config.Captcha{
 		Provider: captcha.ProviderTurnstile, SiteKey: "site", SecretKey: "secret",
@@ -22,8 +23,11 @@ func TestLoginFailsClosedWhenCaptchaTokenIsMissing(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"captcha_required"`) {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	if response.Code == http.StatusForbidden && strings.Contains(response.Body.String(), "captcha_") {
+		t.Fatalf("missing captcha token must fail-open, got %s", response.Body.String())
+	}
+	if response.Code == http.StatusServiceUnavailable && strings.Contains(response.Body.String(), "captcha_") {
+		t.Fatalf("missing captcha token must not 503, got %s", response.Body.String())
 	}
 }
 
