@@ -6,7 +6,8 @@ function assert(condition: unknown, message: string) {
 
 export function runCaptchaGateTests() {
   const component = source.slice(source.indexOf('export default function CaptchaGate'))
-  const firstConditionalReturn = component.indexOf('if (!config || !required) return null')
+  // 条件返回必须在全部 hooks 之后，避免配置异步加载时 hook 顺序白屏。
+  const firstConditionalReturn = component.indexOf('if (!config || !configured) return null')
   assert(firstConditionalReturn > 0, '找不到 CaptchaGate 的首个条件返回')
 
   const hookPattern = /\buse(?:Callback|Effect|Memo|Reducer|Ref|State)\s*\(/g

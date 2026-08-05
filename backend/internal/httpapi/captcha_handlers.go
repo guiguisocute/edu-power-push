@@ -30,27 +30,39 @@ type captchaSettingsResponse struct {
 func (s *Server) publicCaptchaConfig(w http.ResponseWriter, r *http.Request) {
 	effective, err := s.captcha.Effective(r.Context())
 	if err != nil {
-		s.writeError(w, r, http.StatusServiceUnavailable, "captcha_unavailable", "human verification configuration is unavailable")
+		// 读配置失败时对外宣称 disabled，避免前端画死 widget 把登录按钮锁灰。
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"provider": captcha.ProviderDisabled,
+			"site_key": "",
+			"actions":  []string{},
+		})
 		return
 	}
+	// 凭据不全时伪装成 disabled（见 captcha.PublicSettings）。
+	pub := captcha.PublicSettings(effective)
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"provider": effective.Settings.Provider,
-		"site_key": effective.Settings.SiteKey,
-		"actions":  effective.Settings.Actions,
+		"provider": pub.Provider,
+		"site_key": pub.SiteKey,
+		"actions":  pub.Actions,
 	})
 }
 
 func (s *Server) requireCaptcha(w http.ResponseWriter, r *http.Request, action string) bool {
 	effective, enabled, err := s.captcha.Enabled(r.Context(), action)
 	if err != nil {
-		s.writeCaptchaError(w, r, http.StatusServiceUnavailable, "captcha_unavailable", "human verification configuration is unavailable", captcha.Result{})
-		return false
+		// 配置读失败：放行。锁死登录比暂时关掉验证更糟。
+		s.logger.Error("captcha config unavailable; allowing request", "action", action, "error", err)
+		return true
 	}
 	if !enabled {
 		return true
 	}
 	result, err := s.captcha.Verify(r.Context(), effective, action, s.captchaRequestMeta(r))
 	if err == nil && result.Passed {
+		if !result.Available {
+			// 凭据错误 / 上游不可达等兜底放行。打日志方便事后修配置。
+			s.logger.Error("captcha fail-open", "provider", result.Provider, "action", action, "error_codes", result.ErrorCodes)
+		}
 		return true
 	}
 	switch {
@@ -59,8 +71,9 @@ func (s *Server) requireCaptcha(w http.ResponseWriter, r *http.Request, action s
 	case errors.Is(err, captcha.ErrInvalid):
 		s.writeCaptchaError(w, r, http.StatusForbidden, "captcha_invalid", "human verification failed or expired", result)
 	default:
-		s.logger.Error("captcha verification unavailable", "provider", effective.Settings.Provider, "action", action, "error", err)
-		s.writeCaptchaError(w, r, http.StatusServiceUnavailable, "captcha_unavailable", "human verification service is temporarily unavailable", result)
+		// 未归类错误也放行，避免未知故障锁站。
+		s.logger.Error("captcha verification error; allowing request", "provider", effective.Settings.Provider, "action", action, "error", err)
+		return true
 	}
 	return false
 }

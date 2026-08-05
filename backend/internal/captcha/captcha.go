@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/edu-power-push/edu-power-push/backend/internal/secrets"
 	"github.com/edu-power-push/edu-power-push/backend/internal/storage"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -229,12 +229,52 @@ func (s *Service) Enabled(ctx context.Context, action string) (Effective, bool, 
 	if effective.Settings.Provider == ProviderDisabled {
 		return effective, false, nil
 	}
+	// 凭据不全时当未启用：禁止前端画 widget、后端拦登录，避免把自己锁在门外。
+	if !TurnstileReady(effective) {
+		return effective, false, nil
+	}
 	for _, item := range effective.Settings.Actions {
 		if item == action {
 			return effective, true, nil
 		}
 	}
 	return effective, false, nil
+}
+
+// TurnstileReady 表示 provider=turnstile 且 site_key / secret 都已填。
+// 任一缺失时公开配置应伪装成 disabled，校验也应直接放行。
+func TurnstileReady(effective Effective) bool {
+	if effective.Settings.Provider != ProviderTurnstile {
+		return effective.Settings.Provider != ProviderDisabled
+	}
+	return strings.TrimSpace(effective.Settings.SiteKey) != "" && strings.TrimSpace(effective.TurnstileSecret) != ""
+}
+
+// PublicSettings 给匿名 /captcha/config 用。凭据不全时伪装成 disabled，
+// 前端就不会画死 widget、也不会把登录按钮置灰。
+func PublicSettings(effective Effective) Settings {
+	if effective.Settings.Provider == ProviderTurnstile && !TurnstileReady(effective) {
+		return Settings{Provider: ProviderDisabled, SiteKey: "", Hostname: "", Actions: []string{}}
+	}
+	return effective.Settings
+}
+
+// turnstileCredentialBroken 识别 Cloudflare 明确返回的密钥类错误。
+// 真人校验失败（invalid-input-response 等）不在此列，仍应拒绝。
+func turnstileCredentialBroken(codes []string) bool {
+	for _, code := range codes {
+		switch strings.ToLower(strings.TrimSpace(code)) {
+		case "missing-input-secret", "invalid-input-secret":
+			return true
+		}
+	}
+	return false
+}
+
+// passOpen 基础设施坏了时放行。Passed=true 让调用方当成功；
+// Available=false 便于日志与管理面板区分「真过了」和「兜底放行」。
+func passOpen(provider string, codes []string) (Result, error) {
+	return Result{Provider: provider, Passed: true, Available: false, ErrorCodes: codes}, nil
 }
 
 func (s *Service) Verify(ctx context.Context, effective Effective, action string, meta RequestMeta) (Result, error) {
@@ -244,18 +284,19 @@ func (s *Service) Verify(ctx context.Context, effective Effective, action string
 	case ProviderTurnstile:
 		return s.verifyTurnstile(ctx, effective, action, meta)
 	default:
-		return Result{Provider: effective.Settings.Provider}, ErrUnavailable
+		// 未知 provider 等同配置错误，放行以免锁死。
+		return passOpen(effective.Settings.Provider, nil)
 	}
 }
 
 func (s *Service) verifyTurnstile(ctx context.Context, effective Effective, action string, meta RequestMeta) (Result, error) {
 	result := Result{Provider: ProviderTurnstile, Available: true}
+	// 密钥/站点键没配齐：直接放行。Enabled() 通常已短路，这里再兜一层。
+	if !TurnstileReady(effective) {
+		return passOpen(ProviderTurnstile, []string{"not_configured"})
+	}
 	if strings.TrimSpace(meta.Token) == "" {
 		return result, ErrRequired
-	}
-	if effective.Settings.SiteKey == "" || effective.TurnstileSecret == "" {
-		result.Available = false
-		return result, ErrUnavailable
 	}
 	form := url.Values{"secret": {effective.TurnstileSecret}, "response": {strings.TrimSpace(meta.Token)}}
 	if meta.RemoteIP != "" {
@@ -263,20 +304,18 @@ func (s *Service) verifyTurnstile(ctx context.Context, effective Effective, acti
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.TurnstileVerifyURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		result.Available = false
-		return result, ErrUnavailable
+		return passOpen(ProviderTurnstile, []string{"request_build_failed"})
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response, err := s.client.Do(req)
 	if err != nil {
-		result.Available = false
-		return result, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		// 上游不可达：放行，避免验证服务挂了整站登不进。
+		return passOpen(ProviderTurnstile, []string{"upstream_unreachable"})
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		result.Available = false
-		return result, fmt.Errorf("%w: turnstile returned HTTP %d", ErrUnavailable, response.StatusCode)
+		return passOpen(ProviderTurnstile, []string{fmt.Sprintf("http_%d", response.StatusCode)})
 	}
 	var payload struct {
 		Success    bool     `json:"success"`
@@ -285,11 +324,15 @@ func (s *Service) verifyTurnstile(ctx context.Context, effective Effective, acti
 		ErrorCodes []string `json:"error-codes"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&payload); err != nil {
-		result.Available = false
-		return result, fmt.Errorf("%w: decode turnstile response: %v", ErrUnavailable, err)
+		return passOpen(ProviderTurnstile, []string{"decode_failed"})
 	}
 	result.ErrorCodes = payload.ErrorCodes
 	if !payload.Success {
+		// 密钥填错时 Cloudflare 返回 invalid-input-secret 等；放行以免锁管理员。
+		// 令牌伪造/过期仍走 ErrInvalid，captcha 仍有拦截作用。
+		if turnstileCredentialBroken(payload.ErrorCodes) {
+			return passOpen(ProviderTurnstile, payload.ErrorCodes)
+		}
 		return result, ErrInvalid
 	}
 	if payload.Action != "" && payload.Action != TurnstileAction(action) {
