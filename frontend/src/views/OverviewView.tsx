@@ -2,7 +2,7 @@
    hero 余额、用电量条形图、最近推送。
    内联样式对应原型。style-hover 用 .hv-* 类。 */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../lib/store'
 import { makeFmt, themeColors, seg } from '../lib/format'
 import { daily, personalSeries, type PRange } from '../lib/mock'
@@ -47,6 +47,7 @@ import {
 import PushHistory, { type PushHistoryNotice } from '../components/PushHistory'
 import type { PushLog } from '../api/types'
 import { api } from '../api/client'
+import { useElementWidth } from '../lib/useSize'
 
 const PUSH_PAGE_SIZE = 20
 
@@ -57,6 +58,8 @@ export default function OverviewView() {
   const elecRate = parseFloat(s.features?.display?.electricityRate || '') || 0.62
   const fmt = makeFmt(s.unit, elecRate)
   const { RMB, U, cv, nf, f2, alt } = fmt
+  const usagePlotRef = useRef<HTMLElement>(null)
+  const usagePlotW = useElementWidth(usagePlotRef)
   const k = daily()
   /* 已登录未绑表：概览不遮罩。数值显示 —。绑表入口在 hero 余额旁。 */
   const unbound = !!s.user && !s.user.meter
@@ -304,7 +307,8 @@ export default function OverviewView() {
   const displayVals = ps.vals.map((v) => cv(v))
   const displayDorm = ps.dorm.map((v) => cv(v))
   const showDorm = !unbound && displayDorm.some((v) => v > 0)
-  const kmax = Math.max(...displayVals, ...(showDorm ? displayDorm : [0]), 0.0001) * 1.12
+  /* 顶部预留数值标签空间。实测宽度不足时按间隔收敛，但当前点始终显示。 */
+  const kmax = Math.max(...displayVals, ...(showDorm ? displayDorm : [0]), 0.0001) * 1.28
   /* 默认高亮最近有数日。铺满整月后禁止落到月末空槽。 */
   const lastPresent = (() => {
     if (!ps.has) return Math.max(ps.n - 1, 0)
@@ -314,6 +318,8 @@ export default function OverviewView() {
   const rawHi = Math.min(Math.max(0, s.hoverDay), Math.max(ps.n - 1, 0))
   const hi = s.hoverDay >= 99 ? lastPresent : rawHi
   const hasHi = !ps.has || ps.has[hi] !== false
+  const valueLabelStep = usagePlotW > 0 ? Math.max(1, Math.ceil((ps.n * 31) / usagePlotW)) : 1
+  const showValueLabel = (i: number) => i === hi || i % valueLabelStep === 0
   const bars30 = displayVals.map((v, i) => {
     const present = !ps.has || ps.has[i] !== false
     return {
@@ -324,6 +330,9 @@ export default function OverviewView() {
         : i === hi
           ? RED
           : `color-mix(in srgb, var(--fg) ${dark ? 22 : 18}%, transparent)`,
+      label: nf(v),
+      showLabel: present && showValueLabel(i),
+      active: i === hi,
       on: () => set({ hoverDay: i }),
     }
   })
@@ -335,6 +344,14 @@ export default function OverviewView() {
     })
     .filter((p): p is string => p != null)
     .join(' ')
+  const dormPoints = displayDorm.map((v, i) => ({
+    value: v,
+    present: v > 0,
+    x: ((i + 0.5) / ps.n) * 100,
+    y: 100 - (v / kmax) * 100,
+    showLabel: v > 0 && showValueLabel(i),
+    active: i === hi,
+  }))
   const hv = ps.vals[hi]
   const ha = ps.dorm[hi]
   const hd = ha > 0 ? ((hv - ha) / ha) * 100 : 0
@@ -621,7 +638,7 @@ export default function OverviewView() {
         </div>
       </section>
 
-      <section style={{ padding: '44px 0 40px', borderBottom: '1px solid var(--line)' }}>
+      <section ref={usagePlotRef} style={{ padding: '44px 0 40px', borderBottom: '1px solid var(--line)' }}>
         <div data-r="hdr" style={{ display: 'flex', alignItems: 'flex-end', gap: '38px', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
             <div style={{ font: "500 9.5px/1 'JetBrains Mono',monospace", letterSpacing: '.2em', color: 'var(--fg3)' }}>
@@ -744,8 +761,37 @@ export default function OverviewView() {
               <div
                 key={i}
                 onMouseEnter={b.on}
-                style={{ flex: 1, height: '100%', display: 'flex', alignItems: 'flex-end', cursor: 'crosshair' }}
+                style={{
+                  position: 'relative',
+                  flex: 1,
+                  height: '100%',
+                  display: 'flex',
+                  alignItems: 'flex-end',
+                  cursor: 'crosshair',
+                  minWidth: 0,
+                }}
               >
+                {b.showLabel && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      position: 'absolute',
+                      left: '50%',
+                      bottom: `calc(${b.h} + 6px)`,
+                      transform: 'translateX(-50%)',
+                      zIndex: 3,
+                      padding: '1px 2px',
+                      background: 'color-mix(in srgb, var(--bg) 88%, transparent)',
+                      color: b.active ? 'var(--red)' : 'var(--fg3)',
+                      font: "500 9px/1 'JetBrains Mono',monospace",
+                      fontVariantNumeric: 'tabular-nums',
+                      whiteSpace: 'nowrap',
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    {b.label}
+                  </span>
+                )}
                 <div
                   style={{
                     width: '100%',
@@ -773,6 +819,48 @@ export default function OverviewView() {
                 strokeLinejoin="round"
               />
             </svg>
+          )}
+          {showDorm && (
+            <div aria-hidden="true" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 4 }}>
+              {dormPoints.map((point, i) =>
+                point.present ? (
+                  <span
+                    key={i}
+                    style={{
+                      position: 'absolute',
+                      left: point.x + '%',
+                      top: point.y + '%',
+                      width: '6px',
+                      height: '6px',
+                      transform: 'translate(-50%,-50%)',
+                      border: '1.5px solid var(--red)',
+                      borderRadius: '50%',
+                      background: point.active ? 'var(--red)' : 'var(--bg)',
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    {point.showLabel && (
+                      <span
+                        style={{
+                          position: 'absolute',
+                          left: '50%',
+                          bottom: '8px',
+                          transform: 'translateX(-50%)',
+                          padding: '2px 3px',
+                          background: 'color-mix(in srgb, var(--bg) 92%, transparent)',
+                          color: 'var(--red)',
+                          font: "500 9px/1 'JetBrains Mono',monospace",
+                          fontVariantNumeric: 'tabular-nums',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {nf(point.value)}
+                      </span>
+                    )}
+                  </span>
+                ) : null,
+              )}
+            </div>
           )}
         </div>
         )}

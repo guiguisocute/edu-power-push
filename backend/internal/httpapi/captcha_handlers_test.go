@@ -11,8 +11,7 @@ import (
 	"github.com/edu-power-push/edu-power-push/backend/internal/config"
 )
 
-func TestLoginFailsOpenWhenCaptchaTokenIsMissing(t *testing.T) {
-	// widget 挂掉时前端只能空 token 提交。禁止再回 captcha_required 把人锁死。
+func TestLoginRequiresCaptchaTokenWhenEnabled(t *testing.T) {
 	cfg := testAuthConfig()
 	cfg.Captcha = config.Captcha{
 		Provider: captcha.ProviderTurnstile, SiteKey: "site", SecretKey: "secret",
@@ -23,11 +22,28 @@ func TestLoginFailsOpenWhenCaptchaTokenIsMissing(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if response.Code == http.StatusForbidden && strings.Contains(response.Body.String(), "captcha_") {
-		t.Fatalf("missing captcha token must fail-open, got %s", response.Body.String())
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "captcha_required") {
+		t.Fatalf("missing captcha token must be rejected, status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response.Code == http.StatusServiceUnavailable && strings.Contains(response.Body.String(), "captcha_") {
-		t.Fatalf("missing captcha token must not 503, got %s", response.Body.String())
+}
+
+func TestLoginReportsCaptchaProviderOutage(t *testing.T) {
+	cfg := testAuthConfig()
+	cfg.Captcha = config.Captcha{
+		Provider: captcha.ProviderTurnstile, SiteKey: "site", SecretKey: "secret",
+		Actions: []string{captcha.ActionLogin}, TurnstileVerifyURL: "http://127.0.0.1:1/siteverify",
+	}
+	server := New(context.Background(), cfg, nil, nil, nil, nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":"student@example.com","password":"password"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Captcha-Token", "unverifiable-token")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "captcha_unavailable") {
+		t.Fatalf("provider outage must be explicit, status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Retry-After") == "" {
+		t.Fatal("provider outage must include Retry-After")
 	}
 }
 

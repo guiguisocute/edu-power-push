@@ -391,6 +391,8 @@ export default function CampusView() {
   const trendW = useElementWidth(trendPlotRef)
   const hmPlotRef = useRef<HTMLDivElement>(null)
   const hmW = useElementWidth(hmPlotRef)
+  const mainPlotRef = useRef<HTMLDivElement>(null)
+  const mainPlotW = useElementWidth(mainPlotRef)
   const coarse = useIsCoarsePointer()
   /* 触屏：单击临时查看。短时再点同一柱钉住/取消。桌面单击钉住。 */
   const barTapRef = useRef<{ i: number; t: number }>({ i: -1, t: 0 })
@@ -678,7 +680,8 @@ export default function CampusView() {
       }
     },
   )
-  const cmax = Math.max(...cVals, 0.0001) * 1.14
+  /* 为柱顶数字留出稳定的呼吸空间，避免最高柱标签撞到网格顶线。 */
+  const cmax = Math.max(...cVals, 0.0001) * 1.28
   /* 默认高亮最近有数日。铺满整月后禁止落到月末空槽上。 */
   const lastPresent = (() => {
     if (!cs.has) return cs.n - 1
@@ -693,6 +696,7 @@ export default function CampusView() {
       : s.cHover != null
         ? Math.min(s.cHover, cs.n - 1)
         : lastPresent
+  const cValueLabelStep = mainPlotW > 0 ? Math.max(1, Math.ceil((cs.n * 34) / mainPlotW)) : 1
   const cBars = cVals.map((v, i) => {
     const present = !cs.has || cs.has[i] !== false
     const pinned = s.cPin === i
@@ -716,6 +720,9 @@ export default function CampusView() {
       pinned,
       peeked: hovered && !pinned,
       provisional: isProv,
+      label: cpair(v).v,
+      showLabel: present && (i === ci || i % cValueLabelStep === 0),
+      active,
       onEnter: () => {
         if (!coarse) set({ cHover: i })
       },
@@ -1692,7 +1699,7 @@ export default function CampusView() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '16px', marginTop: '30px' }}>
+        <div ref={mainPlotRef} style={{ display: 'flex', gap: '16px', marginTop: '30px' }}>
           <div
             style={{
               width: '48px',
@@ -1753,13 +1760,36 @@ export default function CampusView() {
                     key={i}
                     onMouseEnter={b.onEnter}
                     style={{
+                      position: 'relative',
                       flex: 1,
                       height: '100%',
                       display: 'flex',
                       alignItems: 'flex-end',
                       cursor: 'pointer',
+                      minWidth: 0,
                     }}
                   >
+                    {b.showLabel && (
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          position: 'absolute',
+                          left: '50%',
+                          bottom: `calc(${b.h} + 7px)`,
+                          transform: 'translateX(-50%)',
+                          zIndex: 3,
+                          padding: '1px 2px',
+                          background: 'color-mix(in srgb, var(--bg) 90%, transparent)',
+                          color: b.active ? 'var(--red)' : 'var(--fg3)',
+                          font: "500 9px/1 'JetBrains Mono',monospace",
+                          fontVariantNumeric: 'tabular-nums',
+                          whiteSpace: 'nowrap',
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        {b.label}
+                      </span>
+                    )}
                     <div
                       style={{
                         width: '100%',

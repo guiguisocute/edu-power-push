@@ -271,8 +271,8 @@ func turnstileCredentialBroken(codes []string) bool {
 	return false
 }
 
-// passOpen 基础设施坏了时放行。Passed=true 让调用方当成功；
-// Available=false 便于日志与管理面板区分「真过了」和「兜底放行」。
+// passOpen 只用于配置未完成时的纵深兜底。正常请求会先经过 Enabled，
+// 未完成配置不会进入 Verify。已启用后的缺令牌或服务故障不得走到这里。
 func passOpen(provider string, codes []string) (Result, error) {
 	return Result{Provider: provider, Passed: true, Available: false, ErrorCodes: codes}, nil
 }
@@ -284,8 +284,7 @@ func (s *Service) Verify(ctx context.Context, effective Effective, action string
 	case ProviderTurnstile:
 		return s.verifyTurnstile(ctx, effective, action, meta)
 	default:
-		// 未知 provider 等同配置错误，放行以免锁死。
-		return passOpen(effective.Settings.Provider, nil)
+		return Result{Provider: effective.Settings.Provider, Available: false}, ErrUnavailable
 	}
 }
 
@@ -296,12 +295,9 @@ func (s *Service) verifyTurnstile(ctx context.Context, effective Effective, acti
 	}
 	token := strings.TrimSpace(meta.Token)
 	if token == "" {
-		// 无 token 一律 fail-open。
-		// 场景：widget 红字「无法连接到网站」、site_key 域名不对、脚本被拦——
-		// 前端只能空 token 提交；若这里再 captcha_required，就是「已跳过」却登不进。
-		// 有 token 时仍走严格 siteverify（伪造/过期拒绝；密钥错误放行）。
-		// 代价：机器人可不交 token 绕过。修好 Turnstile 后请在面板确认配置或临时关闭。
-		return passOpen(ProviderTurnstile, []string{"missing_token_fail_open"})
+		// 服务端校验是安全边界。浏览器不送令牌不能证明组件故障，否则机器人
+		// 只需省略请求头即可绕过整套验证。
+		return Result{Provider: ProviderTurnstile, Available: true, ErrorCodes: []string{"missing-input-response"}}, ErrRequired
 	}
 	return s.siteverify(ctx, effective, action, token, meta.RemoteIP)
 }
@@ -309,12 +305,12 @@ func (s *Service) verifyTurnstile(ctx context.Context, effective Effective, acti
 func (s *Service) siteverify(ctx context.Context, effective Effective, action, token, remoteIP string) (Result, error) {
 	result, err := s.siteverifyRaw(ctx, effective.TurnstileSecret, token, remoteIP)
 	if err != nil {
-		return passOpen(ProviderTurnstile, []string{"upstream_unreachable"})
+		return Result{Provider: ProviderTurnstile, Available: false, ErrorCodes: []string{"upstream_unreachable"}}, ErrUnavailable
 	}
 	if !result.success {
-		// 密钥填错：放行。令牌伪造/过期：拒绝。
+		// 密钥填错属于服务配置不可用；令牌伪造、过期或重复使用属于用户验证失败。
 		if turnstileCredentialBroken(result.ErrorCodes) {
-			return passOpen(ProviderTurnstile, result.ErrorCodes)
+			return Result{Provider: ProviderTurnstile, Available: false, ErrorCodes: result.ErrorCodes}, ErrUnavailable
 		}
 		return Result{Provider: ProviderTurnstile, Available: true, ErrorCodes: result.ErrorCodes}, ErrInvalid
 	}

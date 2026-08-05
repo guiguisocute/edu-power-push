@@ -35,16 +35,15 @@ func TestTurnstileVerification(t *testing.T) {
 	}
 }
 
-func TestTurnstileFailsOpenWhenTokenMissing(t *testing.T) {
-	// 无 token：fail-open（widget 挂掉时的唯一出路）。
+func TestTurnstileRequiresToken(t *testing.T) {
 	service := New(Config{
 		Fallback:        Settings{Provider: ProviderTurnstile, SiteKey: "site", Actions: []string{ActionLogin}},
 		TurnstileSecret: "secret", TurnstileVerifyURL: "http://127.0.0.1:1/siteverify",
 	}, nil, nil)
 	effective, _ := service.Effective(context.Background())
 	result, err := service.Verify(context.Background(), effective, ActionLogin, RequestMeta{})
-	if err != nil || !result.Passed || result.Available {
-		t.Fatalf("missing token should fail-open = %#v, %v", result, err)
+	if !errors.Is(err, ErrRequired) || result.Passed || !result.Available {
+		t.Fatalf("missing token should be required = %#v, %v", result, err)
 	}
 }
 
@@ -63,16 +62,15 @@ func TestTurnstileRejectsMismatchedAction(t *testing.T) {
 	}
 }
 
-func TestTurnstileFailsOpenWhenProviderIsDown(t *testing.T) {
-	// 上游挂了时放行，避免人机验证把登录一起带走。
+func TestTurnstileReportsUnavailableWhenProviderIsDown(t *testing.T) {
 	service := New(Config{
 		Fallback:        Settings{Provider: ProviderTurnstile, SiteKey: "site", Actions: []string{ActionLogin}},
 		TurnstileSecret: "secret", TurnstileVerifyURL: "http://127.0.0.1:1/siteverify",
 	}, nil, nil)
 	effective, _ := service.Effective(context.Background())
 	result, err := service.Verify(context.Background(), effective, ActionLogin, RequestMeta{Token: "token"})
-	if err != nil || !result.Passed || result.Available {
-		t.Fatalf("provider outage should fail-open = %#v, %v", result, err)
+	if !errors.Is(err, ErrUnavailable) || result.Passed || result.Available {
+		t.Fatalf("provider outage should be unavailable = %#v, %v", result, err)
 	}
 }
 
@@ -102,7 +100,7 @@ func TestTurnstileFailsOpenWhenCredentialsMissing(t *testing.T) {
 	}
 }
 
-func TestTurnstileFailsOpenOnInvalidSecret(t *testing.T) {
+func TestTurnstileReportsUnavailableOnInvalidSecret(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"success":false,"error-codes":["invalid-input-secret"]}`))
@@ -114,8 +112,8 @@ func TestTurnstileFailsOpenOnInvalidSecret(t *testing.T) {
 	}, nil, nil)
 	effective, _ := service.Effective(context.Background())
 	result, err := service.Verify(context.Background(), effective, ActionLogin, RequestMeta{Token: "token"})
-	if err != nil || !result.Passed || result.Available {
-		t.Fatalf("invalid secret should fail-open = %#v, %v", result, err)
+	if !errors.Is(err, ErrUnavailable) || result.Passed || result.Available {
+		t.Fatalf("invalid secret should be unavailable = %#v, %v", result, err)
 	}
 }
 
