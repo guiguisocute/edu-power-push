@@ -3576,7 +3576,7 @@ components:
 
     Readiness:
       type: object
-      required: [status, version, database, migrations, worker]
+      required: [status, version, database, migrations, worker, cache]
       properties:
         status:
           type: string
@@ -3593,6 +3593,10 @@ components:
         worker:
           type: string
           enum: [ready, stale, unavailable]
+        cache:
+          type: string
+          description: Redis is optional; unavailable falls back to PostgreSQL without failing readiness.
+          enum: [ready, unavailable, disabled]
 
     ScanRunStatus:
       type: string

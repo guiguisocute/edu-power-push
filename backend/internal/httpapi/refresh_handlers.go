@@ -184,6 +184,7 @@ func (s *Server) refreshOneMeter(w http.ResponseWriter, r *http.Request, meter s
 	if err := storage.RefreshRollupsForRun(rollupCtx, s.pool, runID); err != nil {
 		s.logger.Warn("refresh on-demand rollups", "run_id", runID, "error", err)
 	}
+	s.campusCache.invalidate()
 	s.writeMeterRefresh(w, after, status, time.Now(), nextAllowedAt)
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/edu-power-push/edu-power-push/backend/internal/provider"
 	// 注册内置上游。接入自有爬虫时替换此包。见 docs/PROVIDERS.md。
 	_ "github.com/edu-power-push/edu-power-push/backend/internal/provider/bdfairy"
+	"github.com/edu-power-push/edu-power-push/backend/internal/rediscache"
 	"github.com/edu-power-push/edu-power-push/backend/internal/school"
 	"github.com/edu-power-push/edu-power-push/backend/internal/secrets"
 	"github.com/edu-power-push/edu-power-push/backend/internal/storage"
@@ -41,6 +42,17 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	sharedCache := rediscache.New(
+		cfg.Cache.Address, cfg.Cache.Password, cfg.Cache.Database, cfg.Cache.PoolSize, cfg.Cache.Prefix,
+	)
+	if sharedCache != nil {
+		defer sharedCache.Close()
+		if err := sharedCache.Ping(ctx); err != nil {
+			slog.Warn("redis cache unavailable at startup; falling back to PostgreSQL", "error", err)
+		} else {
+			slog.Info("redis cache ready", "address", cfg.Cache.Address)
+		}
+	}
 	pool, err := storage.Open(ctx, cfg.Database.URL, cfg.Database.MaxConns, cfg.App.Timezone.String())
 	if err != nil {
 		slog.Error("open database", "error", err)
@@ -72,7 +84,7 @@ func main() {
 		slog.Error("encrypt legacy channel credentials", "error", err)
 		os.Exit(1)
 	}
-	api := httpapi.New(ctx, cfg, pool, client, mailer.NewDynamic(cfg.Mail, pool, settingsBox), slog.Default())
+	api := httpapi.NewWithSharedCache(ctx, cfg, pool, client, mailer.NewDynamic(cfg.Mail, pool, settingsBox), slog.Default(), sharedCache)
 	server := &http.Server{Addr: cfg.HTTP.Address, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 2 * time.Minute}
 	shutdownDone := make(chan struct{})
 	go func() {

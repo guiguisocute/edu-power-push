@@ -28,6 +28,12 @@ x-app-environment: &app-environment
   # 闸门每个并发槽占用一条池连接。池大小必须大于闸门上限，并留出办事余量。
   DATABASE_MAX_CONNS: ${DATABASE_MAX_CONNS:-24}
   DATABASE_URL: postgres://${POSTGRES_USER:-edu_power}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-edu_power}?sslmode=disable
+  # Redis 只做可丢弃缓存。故障时 API/Worker 回退 PostgreSQL，不进入启动硬依赖。
+  REDIS_ADDR: redis:6379
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  REDIS_DB: ${REDIS_DB:-0}
+  REDIS_POOL_SIZE: ${REDIS_POOL_SIZE:-16}
+  REDIS_PREFIX: ${REDIS_PREFIX:-edu-power}
   ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN is required}
   # 管理面板存凭证用的加密密钥（openssl rand -base64 32）。
   # 留空则面板只能改非敏感设置，不会静默存明文。
@@ -166,6 +172,43 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:8.8-alpine}
+    restart: unless-stopped
+    read_only: true
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - volatile-lfu
+      - --requirepass
+      - ${REDIS_PASSWORD:-}
+    tmpfs:
+      - /data:size=16m,mode=0700
+      - /tmp:size=4m,mode=1777
+    mem_limit: ${REDIS_CONTAINER_MEMORY:-320m}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -n \"$${REDIS_PASSWORD}\" ]; then REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping; else redis-cli ping; fi | grep -qx PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
 
   api:
     <<: *app-security

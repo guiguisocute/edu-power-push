@@ -38,11 +38,12 @@
      └──────────┘              └─────┬──────┘              └────┬─────┘
                                      │                          │
                                      └──────────┬───────────────┘
-                                                ▼
-                                         ┌────────────┐
-                                         │ PostgreSQL │
-                                         │ 状态真源   │
-                                         └────────────┘
+                              ┌──────────────────┴──────────────────┐
+                              ▼                                     ▼
+                       ┌────────────┐                         ┌────────────┐
+                       │ PostgreSQL │                         │   Redis    │
+                       │ 状态真源   │                         │ 可丢弃 L2  │
+                       └────────────┘                         └────────────┘
                                                 │
                     worker / api 经 provider.Dynamic ──▶ 上游 H5 / 电费系统
 ```
@@ -50,6 +51,7 @@
 | Compose 服务 | 二进制 / 镜像 | 默认端口 | 说明 |
 |---|---|---|---|
 | `db` | PostgreSQL 17 | 仅容器网 | 不映射宿主端口 |
+| `redis` | Redis 8 | 仅容器网 | Campus/排行榜共享 L2；无持久化，故障时回退 PostgreSQL |
 | `api` | `cmd/api` | `127.0.0.1:8080` | 产品 API + 管理 API |
 | `worker` | `cmd/worker` | 无 HTTP | 扫描、账单、日明细、推送、维护 |
 | `web` | 前端静态 + Caddy | `127.0.0.1:8081` | SPA |
@@ -176,7 +178,7 @@ cd frontend && pnpm install && pnpm dev
 ```bash
 cp .env.example .env
 # 至少填写：POSTGRES_PASSWORD、ADMIN_TOKEN、AUTH_JWT_SECRET
-docker compose up -d db api worker web
+docker compose up -d db redis api worker web
 ```
 
 1. 打开 Web（默认 `http://127.0.0.1:8081`）。
@@ -187,11 +189,15 @@ docker compose up -d db api worker web
 
 **未选学校时服务仍运行**，全部采集器跳过。多校部署的容器禁止替部署者默认选定学校。
 
+Redis 不映射宿主端口，也不是状态真源。API 先查进程内 L1，再查共享 Redis L2；Redis
+不可用时请求直接回退 PostgreSQL，`/health/ready` 的 `cache` 字段会显示 `unavailable`，
+但不会因此把整个服务判成不可用。
+
 ---
 
 ## 部署
 
-四个容器：`db` + `api` + `worker` + `web`。没有别的依赖，不需要 Kubernetes，也不需要在宿主机装 Go 或 Node。
+五个容器：`db` + `redis` + `api` + `worker` + `web`。Redis 仅保存可重建缓存；不需要 Kubernetes，也不需要在宿主机装 Go 或 Node。
 
 ### 1. 准备 `.env`
 
@@ -268,7 +274,7 @@ docker run --rm --entrypoint sh <镜像> -c \
 
 ```bash
 docker compose --profile tools run --rm admin migrate
-docker compose up -d db api worker web
+docker compose up -d db redis api worker web
 ```
 
 迁移也会在 api / worker 启动时自动跑（PostgreSQL advisory lock 下串行），上面这条只是让你在起服务前先看到迁移结果。
@@ -277,7 +283,7 @@ docker compose up -d db api worker web
 
 ```bash
 curl -fsS http://127.0.0.1:8080/health/ready
-# {"database":"ready","migrations":"ready","status":"ready","version":"version_1","worker":"ready"}
+# {"cache":"ready","database":"ready","migrations":"ready","status":"ready","version":"version_1","worker":"ready"}
 
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/
 # 200

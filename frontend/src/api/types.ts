@@ -29,6 +29,7 @@ export interface Readiness {
   database: 'ready' | 'unavailable'
   migrations: string
   worker: 'ready' | 'stale' | 'unavailable'
+  cache: 'ready' | 'unavailable' | 'disabled'
 }
 
 /* ---- 产品用户会话 ---- */

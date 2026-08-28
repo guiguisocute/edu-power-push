@@ -4,11 +4,30 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestCampusCacheCanonicalizesEquivalentNaturalDayWindows(t *testing.T) {
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{"from", "to", "granularity"}
+	first, _ := url.Parse("/api/v1/campus/series?from=2026-08-01T01:02:03%2B08:00&to=2026-08-27T12:34:01%2B08:00&granularity=day")
+	second, _ := url.Parse("/api/v1/campus/series?from=2026-08-01T22:59:59%2B08:00&to=2026-08-27T23:59:59%2B08:00&granularity=day")
+	if a, b := normalizedCampusCacheKeyAt(first.Path, first.Query(), keys, location), normalizedCampusCacheKeyAt(second.Path, second.Query(), keys, location); a != b {
+		t.Fatalf("same SQL day window produced different cache keys:\n%s\n%s", a, b)
+	}
+
+	exclusive, _ := url.Parse("/api/v1/campus/series?from=2026-08-01T00:00:00%2B08:00&to=2026-08-27T00:00:00%2B08:00&granularity=day")
+	if a, b := normalizedCampusCacheKeyAt(first.Path, first.Query(), keys, location), normalizedCampusCacheKeyAt(exclusive.Path, exclusive.Query(), keys, location); a == b {
+		t.Fatal("inclusive current day and exclusive midnight windows shared a cache key")
+	}
+}
 
 func TestCampusCacheNormalizesUnknownParametersAndCaches(t *testing.T) {
 	cache := newCampusResponseCache()

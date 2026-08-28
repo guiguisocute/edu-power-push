@@ -3,7 +3,7 @@ package storage
 /* daily_campus_rollup 的维护。
    物化已发布官方日明细：某天 × 某楼层的非空房数与合计用电。
    见 migrations/000023、000024。
-   未发布日扫描估算在查询中现算。
+   未发布日扫描估算在查询中现算；位置条件先下推到 meters，避免扫描全校 delta。
    effective_daily_campus_rollup 合并两半为同一总量与户均口径。
    变旧时机：日明细导入、盘点改 meters、改 empty_room_threshold_kwh。
    三入口均调用 RefreshCampusRollup。maintenance 每日兜底。 */
