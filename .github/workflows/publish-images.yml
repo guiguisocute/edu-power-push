@@ -80,27 +80,11 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
 
-      - name: Make linked package public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify public tags anonymously
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in 1 2 3 4 5; do
-            echo "Set package visibility attempt $attempt/5"
-            if gh api --method PATCH "/user/packages/container/${{ github.event.repository.name }}" \
-              -f visibility=public >/dev/null; then
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "Unable to make the GHCR package public" >&2
-          exit 1
-
-      - name: Verify published tags
-        shell: bash
-        run: |
-          set -euo pipefail
+          docker logout "$REGISTRY"
           docker buildx imagetools inspect \
             "${REGISTRY}/${IMAGE_NAME}:api-${{ steps.version.outputs.version }}" >/dev/null
           docker buildx imagetools inspect \
