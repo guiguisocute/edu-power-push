@@ -230,15 +230,15 @@ cp .env.example .env
 
 ```bash
 # .env
-APP_IMAGE=guiguisocute/edu-power-push:api
-WEB_IMAGE=guiguisocute/edu-power-push:web
+APP_IMAGE=ghcr.io/guiguisocute/edu-power-push:api
+WEB_IMAGE=ghcr.io/guiguisocute/edu-power-push:web
 ```
 
 ```bash
 docker compose pull
 ```
 
-两个组件共用**一个**公开仓库，用 tag 前缀区分：`api-*` 是三个 Go 二进制（api / worker / admin），`web-*` 是前端产物 + Caddy。带日期与 commit 的版本 tag 形如 `api-20260802-ac1465f`，`:api` / `:web` 是随最后一次推送移动的指针 —— 生产环境请钉版本 tag，别钉指针。
+两个组件共用**一个**公开 GHCR 包，用 tag 前缀区分：`api-*` 是三个 Go 二进制（api / worker / admin），`web-*` 是前端产物 + Caddy。带日期与 commit 的版本 tag 形如 `api-20260802-ac1465f`，`:api` / `:web` 是随最后一次推送移动的指针 —— 生产环境请钉版本 tag，别钉指针。
 
 **B. 自己构建**（改过代码，或不想用别人的镜像）：
 
