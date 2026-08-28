@@ -1,0 +1,112 @@
+name: Publish container images
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref or commit to build
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-images
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Resolve immutable version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=7 HEAD)"
+          version="$(date -u +%Y%m%d)-$short_sha"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:api
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:api-${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.version.outputs.source_sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build and push Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:web
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:web-${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.version.outputs.source_sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Make linked package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            echo "Set package visibility attempt $attempt/5"
+            if gh api --method PATCH "/user/packages/container/${{ github.event.repository.name }}" \
+              -f visibility=public >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Unable to make the GHCR package public" >&2
+          exit 1
+
+      - name: Verify published tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect \
+            "${REGISTRY}/${IMAGE_NAME}:api-${{ steps.version.outputs.version }}" >/dev/null
+          docker buildx imagetools inspect \
+            "${REGISTRY}/${IMAGE_NAME}:web-${{ steps.version.outputs.version }}" >/dev/null
+          {
+            echo "### Published images"
+            printf '%s\n' "- \`${REGISTRY}/${IMAGE_NAME}:api-${{ steps.version.outputs.version }}\`"
+            printf '%s\n' "- \`${REGISTRY}/${IMAGE_NAME}:web-${{ steps.version.outputs.version }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
