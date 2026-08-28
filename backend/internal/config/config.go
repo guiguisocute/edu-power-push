@@ -48,6 +48,7 @@ type Config struct {
 	App      App
 	Upstream Upstream
 	Database Database
+	Cache    Cache
 	HTTP     HTTP
 	Auth     Auth
 	OAuth    OAuth
@@ -86,6 +87,16 @@ type Database struct {
 	/* MaxConns 同时限制闸门在途请求数。
 	   每个并发槽占用一条池连接。 */
 	MaxConns int32
+}
+
+// Cache 配置可选 Redis。Address 为空时保持纯进程内缓存。
+// Redis 只是加速层，启动与请求均不得把它提升为数据库依赖。
+type Cache struct {
+	Address  string
+	Password string
+	Database int
+	PoolSize int
+	Prefix   string
 }
 
 type HTTP struct {
@@ -280,6 +291,16 @@ func Load() (Config, error) {
 			upstreamMaxConcurrency, upstreamMaxConcurrency+dbConnectionHeadroom, databaseMaxConns,
 		)
 	}
+	redisDatabase, err := intValue("REDIS_DB", 0, 0)
+	if err != nil {
+		return Config{}, err
+	}
+	redisPoolSize, err := intValue("REDIS_POOL_SIZE", 16, 1)
+	if err != nil {
+		return Config{}, err
+	}
+	redisAddress := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	redisPassword := os.Getenv("REDIS_PASSWORD")
 
 	concurrency, err := intValue("SCAN_CONCURRENCY", 1, 1)
 	if err != nil {
@@ -476,6 +497,9 @@ func Load() (Config, error) {
 		if jwtSecret == "" {
 			return Config{}, errors.New("APP_ENV=production requires AUTH_JWT_SECRET")
 		}
+		if redisAddress != "" && redisPassword == "" {
+			return Config{}, errors.New("APP_ENV=production requires REDIS_PASSWORD when REDIS_ADDR is configured")
+		}
 	}
 
 	return Config{
@@ -496,6 +520,13 @@ func Load() (Config, error) {
 		Database: Database{
 			URL:      strings.TrimSpace(os.Getenv("DATABASE_URL")),
 			MaxConns: int32(databaseMaxConns),
+		},
+		Cache: Cache{
+			Address:  redisAddress,
+			Password: redisPassword,
+			Database: redisDatabase,
+			PoolSize: redisPoolSize,
+			Prefix:   value("REDIS_PREFIX", "edu-power"),
 		},
 		HTTP: HTTP{
 			Address:         value("HTTP_ADDR", "127.0.0.1:8080"),

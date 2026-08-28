@@ -3,7 +3,7 @@
 ## 边界
 
 - API 与 Web 只映射到服务器回环地址。对外统一经 443 网关。
-- PostgreSQL 只在 Compose 网络中开放，不映射宿主端口。
+- PostgreSQL 与 Redis 只在 Compose 网络中开放，不映射宿主端口。
 - `ADMIN_TOKEN` 是 SSH 边界之外的第二层保护。
 - 凭据只存在于服务器 `.env` 或进程环境中。`.env` 权限应为 `0600`。
 
@@ -115,9 +115,12 @@ API_PORT=8080
 
 POSTGRES_USER=edu_power
 POSTGRES_DB=edu_power
-POSTGRES_PASSWORD=<独立随机值，可用 openssl rand -hex 32>
-ADMIN_TOKEN=<独立随机值，可用 openssl rand -hex 32>
-AUTH_JWT_SECRET=<另一份独立随机值，可用 openssl rand -hex 32>
+POSTGRES_PASSWORD=<独立随机值，建议 openssl rand -hex 32>
+ADMIN_TOKEN=<独立随机值，建议 openssl rand -hex 32>
+AUTH_JWT_SECRET=<另一份独立随机值，建议 openssl rand -hex 32>
+REDIS_PASSWORD=<另一份独立随机值，建议 openssl rand -hex 32>
+REDIS_MAXMEMORY=256mb
+REDIS_CONTAINER_MEMORY=320m
 AUTH_RATE_PROXY_SECRET=<可选：与反向代理约定的随机值>
 AUTH_ACCESS_TTL_SEC=900
 AUTH_REFRESH_TTL_DAYS=30
@@ -147,6 +150,17 @@ DETAIL_RETRY_CRON=15 10 * * *
 DETAIL_QPS=8
 DETAIL_CONCURRENCY=8
 ```
+
+Redis 只承载 Campus 聚合与排行榜的共享 L2 缓存：禁用 RDB/AOF，使用 `volatile-lfu`
+在 256 MiB 内淘汰带 TTL 的响应；代际键不带 TTL，不会因淘汰丢失失效版本。API 进程内
+还有一层 L1，默认 Campus 新鲜 5 分钟、陈旧可回源 30 分钟并异步刷新；排行榜缓存到当前
+榜期的 `next_update_at`。Worker 写入数据后提升共享代际，Redis 故障时两类读请求都回退
+PostgreSQL。Redis 因而不进入数据库备份，也不能存会话、任务或任何不可重建数据。
+
+生产环境应为 `REDIS_PASSWORD` 生成独立随机值，并在切换 API/Worker 前等待 Compose
+健康检查返回 Redis `PONG`。
+健康检查返回 `cache=ready|unavailable|disabled`；缓存故障会暴露在状态中，但不会让数据库
+仍可服务的 API 被负载均衡器摘除。
 
 共享闸门、三类扫描器的 QPS 与并发都能在管理面板上改。
 保存后 worker 与 API 在下一次取设置时换挡，不必重启。
@@ -280,7 +294,7 @@ docker compose up -d db
 docker compose --profile tools run --rm admin migrate
 docker compose --profile tools run --rm admin import-inventory --file /bootstrap/room_meters.json
 docker compose --profile tools run --rm admin import-snapshot --file /bootstrap/meter_balances.json
-docker compose up -d api worker
+docker compose up -d redis api worker
 ```
 
 两个导入命令均按源文件哈希幂等。

@@ -34,6 +34,7 @@ import (
 	"github.com/edu-power-push/edu-power-push/backend/internal/oauth"
 	"github.com/edu-power-push/edu-power-push/backend/internal/provider"
 	"github.com/edu-power-push/edu-power-push/backend/internal/push"
+	"github.com/edu-power-push/edu-power-push/backend/internal/rediscache"
 	"github.com/edu-power-push/edu-power-push/backend/internal/scanner"
 	"github.com/edu-power-push/edu-power-push/backend/internal/secrets"
 	"github.com/edu-power-push/edu-power-push/backend/internal/storage"
@@ -99,6 +100,7 @@ type Server struct {
 	// 超出请求排队等位。等不到则降级。
 	refreshSlots chan struct{}
 	requestGate  *storage.UpstreamRequestGate
+	sharedCache  *rediscache.Client
 	// 榜单按日周月固定刷新点缓存。完整响应按查看者隔离，禁止隐私数据串号。
 	rankingCache *rankingResponseCache
 	// 公开聚合端点保持匿名。数据库成本仍有界。
@@ -123,6 +125,10 @@ func (s *Server) mailReady(ctx context.Context) bool {
 }
 
 func New(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, client *provider.Dynamic, mailer Mailer, logger *slog.Logger) *Server {
+	return NewWithSharedCache(ctx, cfg, pool, client, mailer, logger, nil)
+}
+
+func NewWithSharedCache(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, client *provider.Dynamic, mailer Mailer, logger *slog.Logger, shared *rediscache.Client) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -134,16 +140,16 @@ func New(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, client *pro
 		cfg.Mail.UserDayLimit = 500
 	}
 	s := &Server{
-		cfg: cfg, pool: pool, upstream: client, mailer: mailer, logger: logger, ctx: ctx,
+		cfg: cfg, pool: pool, upstream: client, mailer: mailer, logger: logger, ctx: ctx, sharedCache: shared,
 		channels: push.NewChannelSender(nil), mux: http.NewServeMux(),
 		authGate:          newIPRateLimiter(cfg.HTTP.RateProxySecret),
 		expensiveAuthGate: newExpensiveAuthRateLimiter(cfg.HTTP.RateProxySecret),
 		previewGate:       newRateLimiter(3*time.Second, 20),
 		refreshGate:       newMeterRefreshGate(30 * time.Second),
 		refreshSlots:      make(chan struct{}, meterRefreshConcurrency),
-		rankingCache:      newRankingResponseCache(),
+		rankingCache:      newRankingResponseCacheWithShared(shared),
 		campusGate:        newCampusRateLimiter(cfg.HTTP.RateProxySecret),
-		campusCache:       newCampusResponseCache(),
+		campusCache:       newCampusResponseCacheWithShared(ctx, cfg.App.Timezone, shared),
 	}
 	if pool != nil && cfg.Upstream.GlobalQPS > 0 && cfg.Upstream.GlobalConcurrency > 0 {
 		gate, err := storage.NewUpstreamRequestGate(pool, cfg.Upstream.GlobalQPS, cfg.Upstream.GlobalConcurrency)
@@ -394,13 +400,20 @@ func (s *Server) live(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
+	cacheStatus := "disabled"
+	if s.sharedCache != nil {
+		cacheStatus = "ready"
+		if err := s.sharedCache.Ping(ctx); err != nil {
+			cacheStatus = "unavailable"
+		}
+	}
 	if err := s.pool.Ping(ctx); err != nil {
-		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "degraded", "version": releaseVersion, "database": "unavailable", "migrations": "unknown", "worker": "unavailable"})
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "degraded", "version": releaseVersion, "database": "unavailable", "migrations": "unknown", "worker": "unavailable", "cache": cacheStatus})
 		return
 	}
 	version, err := storage.MigrationVersion(ctx, s.pool)
 	if err != nil || version < 1 {
-		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "degraded", "version": releaseVersion, "database": "ready", "migrations": "missing", "worker": "unavailable"})
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "degraded", "version": releaseVersion, "database": "ready", "migrations": "missing", "worker": "unavailable", "cache": cacheStatus})
 		return
 	}
 	worker, err := storage.WorkerState(ctx, s.pool, 3*time.Minute)
@@ -411,7 +424,7 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	if worker != "ready" {
 		status = "degraded"
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"status": status, "version": releaseVersion, "database": "ready", "migrations": "ready", "worker": worker})
+	s.writeJSON(w, http.StatusOK, map[string]any{"status": status, "version": releaseVersion, "database": "ready", "migrations": "ready", "worker": worker, "cache": cacheStatus})
 }
 
 /*
@@ -588,6 +601,7 @@ func (s *Server) updateFrontendConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result.OAuth = s.oauthAvailability(r.Context())
+	s.campusCache.invalidate()
 	s.rankingCache.invalidate()
 	s.writeJSON(w, http.StatusOK, result)
 }
@@ -1418,6 +1432,7 @@ func (s *Server) launchBillRun(runID string, settings storage.BillRunSettings) {
 			return
 		}
 		s.logger.Info("bill reconciliation completed", "run_id", runID, "counters", counters)
+		s.campusCache.invalidate()
 	}()
 }
 
@@ -1459,6 +1474,8 @@ func (s *Server) launchDailyDetailRun(runID string, settings storage.DailyDetail
 		if err := storage.RefreshRollupsForDailyDetailRun(context.Background(), s.pool, runID); err != nil {
 			s.logger.Error("refresh consumption rollups after daily detail", "run_id", runID, "error", err)
 		}
+		s.campusCache.invalidate()
+		s.rankingCache.invalidate()
 		s.logger.Info("daily detail collection completed", "run_id", runID, "counters", counters)
 	}()
 }
@@ -1507,6 +1524,7 @@ func (s *Server) launchScan(runID string, qps float64, concurrency, retryMax int
 		if err := storage.RefreshRollupsForRun(context.Background(), s.pool, runID); err != nil {
 			s.logger.Error("refresh scan rollups", "run_id", runID, "error", err)
 		}
+		s.campusCache.invalidate()
 		if s.mailReady(context.Background()) && s.cfg.Mail.AdminTo != "" {
 			if _, mailErr := s.mailer.SendScanSummary(context.Background(), s.cfg.Mail.AdminTo, runID, "completed", counters); mailErr != nil {
 				s.logger.Error("send scan summary", "run_id", runID, "error", mailErr)
@@ -1639,6 +1657,8 @@ func (s *Server) applyInventoryImport(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.campusCache.invalidate()
+	s.rankingCache.invalidate()
 	s.writeJSON(w, http.StatusCreated, result)
 }
 
@@ -1830,7 +1850,7 @@ func (s *Server) campusRankings(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(location)
 	key := fmt.Sprintf("%q|%q|%q|%q|%d|%q|%t", period, mode, building, floor, limit, viewerID, reveal)
 	if s.rankingCache == nil {
-		s.rankingCache = newRankingResponseCache()
+		s.rankingCache = newRankingResponseCacheWithShared(s.sharedCache)
 	}
 	result, cacheStatus, err := s.rankingCache.get(r.Context(), key, now, func() (storage.RankingView, error) {
 		frontend, err := storage.GetFrontendConfig(r.Context(), s.pool)

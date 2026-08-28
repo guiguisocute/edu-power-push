@@ -379,28 +379,50 @@ func ListMeterBills(ctx context.Context, pool *pgxpool.Pool, meter, fromMonth, t
 func qualityForScope(ctx context.Context, pool *pgxpool.Pool, from, to time.Time, building, floor string) (Quality, error) {
 	var q Quality
 	err := pool.QueryRow(ctx, `
-		WITH eligible AS (
+		WITH eligible AS MATERIALIZED (
 			SELECT id FROM meters WHERE active AND NOT excluded
 			  AND building<>$5 AND ($3='' OR building=$3) AND ($4='' OR floor=$4)
-		), bounds AS (
+		), bounds AS MATERIALIZED (
 			SELECT ($1::timestamptz)::date AS from_date,
 				CASE WHEN $2::timestamptz=date_trunc('day',$2::timestamptz)
 					THEN ($2::timestamptz)::date ELSE ($2::timestamptz)::date+1 END AS to_date
-		), official_covered AS (
+		), official_covered AS MATERIALIZED (
 			SELECT DISTINCT u.meter_id FROM daily_usages u JOIN eligible e ON e.id=u.meter_id
 			CROSS JOIN bounds b
 			WHERE u.has_upstream_data
 			  AND u.usage_date>=b.from_date AND u.usage_date<b.to_date
-		), estimated AS (
-			SELECT DISTINCT d.meter_id FROM live_scan_daily_consumption d JOIN eligible e ON e.id=d.meter_id
-			CROSS JOIN bounds b
-			WHERE d.usage_date>=b.from_date AND d.usage_date<b.to_date
+		), estimated AS MATERIALIZED (
+			/* 从范围内电表走 meter_id 索引，命中第一条未发布估算即停止。
+			   禁止先展开 live_scan_daily_consumption；那会扫描并聚合全校 delta。 */
+			SELECT e.id AS meter_id
+			FROM eligible e CROSS JOIN bounds b
+			WHERE EXISTS (
+				SELECT 1
+				FROM consumption_deltas d
+				WHERE d.meter_id=e.id
+				  AND d.status IN ('valid','unchanged')
+				  AND d.to_time>=b.from_date::timestamptz
+				  AND d.to_time<b.to_date::timestamptz
+				  AND NOT EXISTS (
+					SELECT 1 FROM daily_usages u
+					WHERE u.meter_id=d.meter_id
+					  AND u.usage_date=d.to_time::date
+					  AND u.has_upstream_data
+				  )
+			)
 		), covered AS (
 			SELECT meter_id FROM official_covered UNION SELECT meter_id FROM estimated
 		), stale AS (
-			SELECT DISTINCT ON (r.meter_id) r.meter_id, r.freshness
-			FROM meter_readings r JOIN estimated e ON e.meter_id=r.meter_id
-			ORDER BY r.meter_id, r.reading_time DESC
+			/* 每表只取最新一行，避免排序全部历史读数。 */
+			SELECT e.meter_id, latest.freshness
+			FROM estimated e
+			JOIN LATERAL (
+				SELECT r.freshness
+				FROM meter_readings r
+				WHERE r.meter_id=e.meter_id
+				ORDER BY r.reading_time DESC
+				LIMIT 1
+			) latest ON true
 		)
 		SELECT (SELECT count(*) FROM eligible), (SELECT count(*) FROM covered),
 			(SELECT count(*) FROM stale WHERE freshness='stale'),
@@ -433,9 +455,11 @@ func GetCampusSummary(ctx context.Context, pool *pgxpool.Pool, from, to time.Tim
 		result.Scope["floor"] = floor
 	}
 	if err := pool.QueryRow(ctx, `
-		WITH daily_counts AS (
-			/* 官方值与未发布日暂估值使用同一逐日非空房口径。 */
-			SELECT r.usage_date, sum(r.occupied_rooms) AS rooms
+		WITH daily AS (
+			/* 总量与非空房数来自同一份逐日汇总，禁止为两个指标重复展开实时视图。 */
+			SELECT r.usage_date,
+			       sum(r.occupied_rooms) AS rooms,
+			       sum(r.usage_kwh) AS usage_kwh
 			FROM effective_daily_campus_rollup r
 			WHERE r.building<>$5
 			  AND r.usage_date >= ($1::timestamptz)::date
@@ -444,15 +468,8 @@ func GetCampusSummary(ctx context.Context, pool *pgxpool.Pool, from, to time.Tim
 			  AND ($3='' OR r.building=$3) AND ($4='' OR r.floor=$4)
 			GROUP BY r.usage_date
 		)
-		SELECT (
-			SELECT sum(r.usage_kwh)::text
-			FROM effective_daily_campus_rollup r
-			WHERE r.building<>$5
-			  AND r.usage_date >= ($1::timestamptz)::date
-			  AND r.usage_date < CASE WHEN $2::timestamptz=date_trunc('day',$2::timestamptz)
-				THEN ($2::timestamptz)::date ELSE ($2::timestamptz)::date+1 END
-			  AND ($3='' OR r.building=$3) AND ($4='' OR r.floor=$4)
-		), COALESCE((SELECT round(avg(rooms))::integer FROM daily_counts),0)`,
+		SELECT sum(usage_kwh)::text, COALESCE(round(avg(rooms))::integer,0)
+		FROM daily`,
 		from, to, building, floor, nonPlatformBillingBuilding).Scan(&result.TotalKWH, &result.Meters); err != nil {
 		return result, err
 	}
@@ -544,10 +561,12 @@ func GetSeries(ctx context.Context, pool *pgxpool.Pool, meter, metric, granulari
 			granularity, from, to, meter, building, floor, nonPlatformBillingBuilding)
 	} else {
 		rows, err = pool.Query(ctx, `
-			WITH consumption AS (
-				/* 全校范围走官方值与暂估值的统一汇总。
-				   该汇总无 meter 维度。单表时（$4<>''）回落原始视图。 */
-				SELECT r.usage_date, r.usage_kwh
+			WITH campus_daily AS MATERIALIZED (
+				/* 校园总量与非空房除数共用一次实时汇总扫描。
+				   单表时 $4<>''，One-Time Filter 直接跳过该分支。 */
+				SELECT r.usage_date,
+				       sum(r.usage_kwh)::numeric(24,4) AS usage_kwh,
+				       sum(r.occupied_rooms) AS rooms
 				FROM effective_daily_campus_rollup r
 				WHERE $4=''
 				  AND r.usage_date >= ($2::timestamptz)::date
@@ -557,6 +576,11 @@ func GetSeries(ctx context.Context, pool *pgxpool.Pool, meter, metric, granulari
 				  END
 				  AND ($5='' OR r.building=$5) AND ($6='' OR r.floor=$6)
 				  AND r.building<>$7
+				GROUP BY r.usage_date
+			), consumption AS (
+				/* 全校范围走官方值与暂估值的统一汇总。
+				   该汇总无 meter 维度。单表时（$4<>''）回落原始视图。 */
+				SELECT usage_date, usage_kwh FROM campus_daily
 				UNION ALL
 				SELECT d.usage_date, d.usage_kwh
 				FROM effective_daily_consumption d JOIN meters m ON m.id=d.meter_id
@@ -573,26 +597,10 @@ func GetSeries(ctx context.Context, pool *pgxpool.Pool, meter, metric, granulari
 				       sum(usage_kwh)::numeric(24,4)::text AS value
 				FROM consumption
 				GROUP BY 1
-			), daily_counts AS (
-				/* 非空房数走官方值与暂估值的统一日汇总。
-				   单表时除数恒为 1。结果会被丢弃。
-				   使用 $4='' 跳过全表聚合。 */
-				SELECT date_trunc($1, r.usage_date::timestamptz) period_start,
-				       r.usage_date,
-				       sum(r.occupied_rooms) AS rooms
-				FROM effective_daily_campus_rollup r
-				WHERE $4=''
-				  AND r.usage_date >= ($2::timestamptz)::date
-				  AND r.usage_date < CASE
-					WHEN $3::timestamptz=date_trunc('day',$3::timestamptz) THEN ($3::timestamptz)::date
-					ELSE ($3::timestamptz)::date+1
-				  END
-				  AND ($5='' OR r.building=$5) AND ($6='' OR r.floor=$6)
-				  AND r.building<>$7
-				GROUP BY 1,2
 			), occupancy_by_period AS (
-				SELECT period_start, round(avg(rooms))::integer AS rooms
-				FROM daily_counts GROUP BY period_start
+				SELECT date_trunc($1, usage_date::timestamptz) AS period_start,
+				       round(avg(rooms))::integer AS rooms
+				FROM campus_daily GROUP BY 1
 			)
 			SELECT v.period_start, v.period_start + ('1 ' || $1)::interval, v.value,
 			       CASE WHEN $4<>'' THEN 1 ELSE COALESCE(o.rooms,0) END
@@ -660,16 +668,19 @@ func GetCampusBreakdown(
 
 	/* 空房按天变化。Meters 为整窗日均非空房数。
 	   每桶除数在 meter_counts。禁止用昨日状态覆盖历史。
-	   使用 GROUPING SETS 一次算两个粒度。避免双扫。
+	   用 daily CTE 同时计算用电量、桶内户数和整窗户数：
+	   旧实现的两条查询会各自展开一次实时视图。
 	   数据源为 effective_daily_campus_rollup。见 migration 000033。
 	   bucket 是 usage_date 的函数。窗口平均等于整体平均。 */
 	meterCounts := map[string]int{}
 	bucketMeterCounts := map[string]map[time.Time]int{}
-	countRows, err := pool.Query(ctx, `
-		WITH daily_counts AS (
+	rows, err := pool.Query(ctx, `
+		WITH daily AS MATERIALIZED (
 			SELECT CASE WHEN $4='' THEN r.building ELSE r.floor END AS row_key,
 			       date_trunc($1, r.usage_date::timestamptz) AS bucket,
-			       r.usage_date, sum(r.occupied_rooms) AS rooms
+			       r.usage_date,
+			       sum(r.occupied_rooms) AS rooms,
+			       sum(r.usage_kwh) AS usage_kwh
 			FROM effective_daily_campus_rollup r
 			WHERE r.usage_date >= ($2::timestamptz)::date
 			  AND r.usage_date < CASE WHEN $3::timestamptz=date_trunc('day',$3::timestamptz)
@@ -677,52 +688,19 @@ func GetCampusBreakdown(
 			  AND r.building<>$5
 			  AND ($4='' OR r.building=$4)
 			GROUP BY 1,2,3
+		), bucket_stats AS (
+			SELECT row_key, bucket,
+			       sum(usage_kwh)::numeric(24,4)::text AS usage_kwh,
+			       round(avg(rooms))::integer AS bucket_meters
+			FROM daily GROUP BY 1,2
+		), window_stats AS (
+			SELECT row_key, round(avg(rooms))::integer AS window_meters
+			FROM daily GROUP BY 1
 		)
-		SELECT row_key, bucket, round(avg(rooms))::integer, grouping(bucket)
-		FROM daily_counts
-		GROUP BY GROUPING SETS ((row_key, bucket), (row_key))`,
+		SELECT b.row_key, b.bucket, b.usage_kwh, b.bucket_meters, w.window_meters
+		FROM bucket_stats b JOIN window_stats w USING (row_key)
+		ORDER BY b.row_key, b.bucket`,
 		granularity, from, to, building, nonPlatformBillingBuilding)
-	if err != nil {
-		return result, err
-	}
-	for countRows.Next() {
-		var key string
-		var bucket *time.Time
-		var n, windowLevel int
-		if err := countRows.Scan(&key, &bucket, &n, &windowLevel); err != nil {
-			countRows.Close()
-			return result, err
-		}
-		// grouping(bucket)=1 为整窗汇总。bucket 为 NULL。
-		if windowLevel == 1 {
-			meterCounts[key] = n
-			continue
-		}
-		if bucket == nil {
-			continue
-		}
-		if bucketMeterCounts[key] == nil {
-			bucketMeterCounts[key] = map[time.Time]int{}
-		}
-		bucketMeterCounts[key][*bucket] = n
-	}
-	countRows.Close()
-	if err := countRows.Err(); err != nil {
-		return result, err
-	}
-
-	/* 统一汇总已合并官方值与未发布日扫描暂估值。 */
-	rows, err := pool.Query(ctx, `
-		SELECT CASE WHEN $4='' THEN r.building ELSE r.floor END AS row_key,
-		       date_trunc($1, r.usage_date::timestamptz) AS bucket,
-		       sum(r.usage_kwh)::numeric(24,4)::text
-		FROM effective_daily_campus_rollup r
-		WHERE r.usage_date >= ($2::timestamptz)::date
-		  AND r.usage_date < CASE WHEN $3::timestamptz=date_trunc('day',$3::timestamptz)
-			THEN ($3::timestamptz)::date ELSE ($3::timestamptz)::date+1 END
-		  AND r.building<>$5
-		  AND ($4='' OR r.building=$4)
-		GROUP BY 1,2 ORDER BY 1,2`, granularity, from, to, building, nonPlatformBillingBuilding)
 	if err != nil {
 		return result, err
 	}
@@ -738,9 +716,15 @@ func GetCampusBreakdown(
 		var key string
 		var bucket time.Time
 		var value string
-		if err := rows.Scan(&key, &bucket, &value); err != nil {
+		var bucketMeters, windowMeters int
+		if err := rows.Scan(&key, &bucket, &value, &bucketMeters, &windowMeters); err != nil {
 			return result, err
 		}
+		meterCounts[key] = windowMeters
+		if bucketMeterCounts[key] == nil {
+			bucketMeterCounts[key] = map[time.Time]int{}
+		}
+		bucketMeterCounts[key][bucket] = bucketMeters
 		cells[key] = append(cells[key], cell{bucket: bucket, value: value})
 		bucketSeen[bucket] = true
 	}

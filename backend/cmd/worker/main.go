@@ -21,6 +21,7 @@ import (
 	// 注册内置上游。接入自有爬虫时替换此包。见 docs/PROVIDERS.md。
 	_ "github.com/edu-power-push/edu-power-push/backend/internal/provider/bdfairy"
 	"github.com/edu-power-push/edu-power-push/backend/internal/push"
+	"github.com/edu-power-push/edu-power-push/backend/internal/rediscache"
 	"github.com/edu-power-push/edu-power-push/backend/internal/scanner"
 	"github.com/edu-power-push/edu-power-push/backend/internal/school"
 	"github.com/edu-power-push/edu-power-push/backend/internal/secrets"
@@ -46,6 +47,7 @@ type worker struct {
 	detailRunning bool
 	stopping      bool
 	requestGate   *storage.UpstreamRequestGate
+	sharedCache   *rediscache.Client
 	// 合并余额 cron 触发。另一轮在跑时只记一次待跑。
 	// 结束后由 5 秒轮询启动一轮。不丢触发，不重放多次。
 	fullDue        bool
@@ -73,6 +75,17 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	sharedCache := rediscache.New(
+		cfg.Cache.Address, cfg.Cache.Password, cfg.Cache.Database, cfg.Cache.PoolSize, cfg.Cache.Prefix,
+	)
+	if sharedCache != nil {
+		defer sharedCache.Close()
+		if err := sharedCache.Ping(ctx); err != nil {
+			slog.Warn("redis cache unavailable at startup; invalidation will retry after data updates", "error", err)
+		} else {
+			slog.Info("redis cache ready", "address", cfg.Cache.Address)
+		}
+	}
 	pool, err := storage.Open(ctx, cfg.Database.URL, cfg.Database.MaxConns, cfg.App.Timezone.String())
 	if err != nil {
 		fatal("open database", err)
@@ -111,6 +124,7 @@ func main() {
 		mailer: mailService, settingsBox: settingsBox,
 		push:   push.New(pool, mailService, settingsBox, slog.Default()),
 		logger: slog.Default(), instance: fmt.Sprintf("%s-%d", hostname, os.Getpid()), requestGate: requestGate,
+		sharedCache: sharedCache,
 	}
 
 	cronLogger := cron.VerbosePrintfLogger(log.New(os.Stderr, "cron: ", log.LstdFlags))
@@ -798,6 +812,7 @@ func (w *worker) start(ctx context.Context, scan storage.RunnableScan) {
 		if err := storage.RefreshRollupsForRun(context.Background(), w.repo.Pool, scan.RunID); err != nil {
 			w.logger.Error("refresh scan rollups", "run_id", scan.RunID, "error", err)
 		}
+		w.invalidateCaches("campus")
 		// 余额已写入。立即跑低额预警。
 		w.runPush(context.Background())
 		if w.mailer != nil && w.cfg.Mail.AdminTo != "" {
@@ -869,6 +884,7 @@ func (w *worker) startBill(ctx context.Context, bill storage.RunnableBill) {
 			w.notifyFailure("bill run " + bill.RunID + " failed: " + err.Error())
 			return
 		}
+		w.invalidateCaches("campus")
 		w.logger.Info("bill reconciliation completed", "run_id", bill.RunID, "counters", counters)
 	}()
 }
@@ -934,6 +950,7 @@ func (w *worker) startDailyDetails(ctx context.Context, detail storage.RunnableD
 		if err := storage.RefreshRollupsForDailyDetailRun(context.Background(), w.repo.Pool, detail.RunID); err != nil {
 			w.logger.Error("refresh consumption rollups after daily detail", "run_id", detail.RunID, "error", err)
 		}
+		w.invalidateCaches("campus", "ranking")
 		w.logger.Info("official daily detail collection completed", "run_id", detail.RunID, "counters", counters)
 	}()
 }
@@ -973,6 +990,19 @@ func (w *worker) maintenance(ctx context.Context) {
 	// 此处覆盖上述入口遗漏的情况。
 	if err := storage.RefreshCampusRollup(ctx, w.repo.Pool); err != nil && !errors.Is(err, context.Canceled) {
 		w.logger.Error("refresh campus rollup", "error", err)
+	} else if err == nil {
+		w.invalidateCaches("campus")
+	}
+}
+
+func (w *worker) invalidateCaches(domains ...string) {
+	if w.sharedCache == nil {
+		return
+	}
+	for _, domain := range domains {
+		if err := w.sharedCache.BumpGeneration(context.Background(), domain); err != nil {
+			w.logger.Warn("invalidate redis cache", "domain", domain, "error", err)
+		}
 	}
 }
 
